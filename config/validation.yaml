@@ -1,0 +1,53 @@
+# Oracle Validator - Validation Configuration
+
+schemas:
+  - source: CTROMSADMIN
+    target: CTROMSADMIN
+  # - source: FINANCE
+  #   target: FINANCE_NEW
+
+modules:
+  inventory: true
+  tables: true
+  indexes: true
+  constraints: true
+  sequences: true
+  grants: false
+
+  code_objects:
+    enabled: false
+    # Kontrol edilecek obje tipleri (boş bırakılırsa hepsi)
+    types:
+      - FUNCTION
+      - PROCEDURE
+      - PACKAGE
+      - PACKAGE BODY
+      - TRIGGER
+      - TYPE
+      - TYPE BODY
+    normalize_whitespace: false   # DDL karşılaştırmasında whitespace ignore
+
+row_count:
+  mode: auto           # auto | exact | sample | stats | skip
+  sample_pct: 1        # SAMPLE(x) için yüzde — auto modda da kullanılır
+  timeout_sec: 30      # Bu süreyi aşan sorgular TIMEOUT olarak işaretlenir
+  parallel_degree: 0   # 0 = hint yok, >0 = /*+ PARALLEL(t, N) */ eklenir
+  refresh_stats: false # COUNT öncesi DBMS_STATS.GATHER_TABLE_STATS çalıştır
+  stats_max_age_days: 7  # İstatistik bu kadar günden eskiyse WARNING ver
+  # Tablo bazlı override — belirli tabloları atlamak veya mod değiştirmek için
+  overrides: {}
+  # overrides:
+  #   AUDIT_LOG: skip
+  #   ORDERS: sample
+
+  # auto mod için eşik değerleri (num_rows bazlı)
+  auto_thresholds:
+    exact_below: 1_000_000       # < 1M  → exact COUNT(*)
+    sample_below: 100_000_000    # < 100M → SAMPLE ile tahmin
+    # >= 100M → stats kullan
+
+ignore_differences:
+  lob_storage: true        # BASICFILE vs SECUREFILE — WARNING değil, ignore
+  segment_creation: true   # DEFERRED vs IMMEDIATE
+  tablespace: true         # Tablespace farklarını ignore et
+  index_compression: true  # Index compression farklarını ignore et

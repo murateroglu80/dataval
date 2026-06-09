@@ -1,0 +1,24 @@
+# Oracle Validator - Connection Configuration
+# Bu dosyayı kopyalayıp connections.yaml adıyla kaydedin:
+#   cp config/connections.yaml.example config/connections.yaml
+#
+# Şifre için iki yöntem:
+#   1. Düz metin    : password: "MyPass123"
+#   2. Env variable : password: "$SOURCE_DB_PASS"  → export SOURCE_DB_PASS=MyPass123
+
+source:
+  host: source-db.example.com
+  port: 1521
+  service: ORCL11G          # service_name (SID değil)
+  username: validator_user
+  password: "$SOURCE_DB_PASS"
+  # sysdba: true            # SYSDBA bağlantısı için uncomment et
+  # wallet_location: ""     # Oracle Wallet kullanıyorsanız
+
+target:
+  host: target-db.example.com
+  port: 1521
+  service: ORCL19C
+  username: validator_user
+  password: "$TARGET_DB_PASS"
+  # sysdba: true
