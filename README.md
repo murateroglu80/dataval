@@ -22,7 +22,12 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 ## Kurulum
 
 ```bash
+# GitHub
 git clone https://github.com/murateroglu80/dataval.git
+
+# veya Bitbucket
+git clone https://bitbucket.org/mipsoftdev/dataval.git
+
 cd dataval
 pip install -r requirements.txt
 ```
