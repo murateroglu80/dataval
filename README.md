@@ -302,6 +302,39 @@ GRANT EXECUTE ON DBMS_STATS      TO valuser;
 
 ---
 
+## Debug Mode
+
+Doğrulama çalışırken kontrol edilen **her objeyi canlı** görmek ve bir log dosyasına
+yazmak için debug mode'u açın. Her obje için şema-nitelikli ad, source ve target değeri
+ve sonuç durumu satır satır akar.
+
+`config/validation.yaml`:
+
+```yaml
+debug:
+  enabled: true       # debug mode on
+  log_file: ""        # boş = ./logs/dataval_<zaman>.log otomatik
+```
+
+veya CLI ile (YAML'ı override eder):
+
+```bash
+python run.py --debug          # veya -d
+```
+
+**Çıktı:**
+- **Ekran (stderr):** `· [tables] CTROMSADMIN.ORDERS  src=1,250  tgt=1,250  ✅ PASS`
+- **Log dosyası:** her çalışmada zaman damgalı yeni dosya — `./logs/dataval_20260610_184500.log`
+
+Debug çıktısı ayrı bir akışta (stderr) olduğundan asıl rapor (stdout) bozulmaz; istersen
+ayırabilirsin:
+
+```bash
+python run.py --debug 2> debug_ekran.log    # ekran debug'ını ayrı dosyaya
+```
+
+> `logs/` ve `*.log` `.gitignore`'da olduğundan log dosyaları commit edilmez.
+
 ## Bilinen Sorunlar / Troubleshooting
 
 11g → 19c taşımalarında karşılaşılan farklar ve hatalar ayrı belgelerde toplanmıştır:

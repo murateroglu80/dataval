@@ -13,7 +13,8 @@ from rich import box
 
 from validator.config_loader import load_config, SchemaMapping
 from validator.connection import test_connection, get_connection
-from validator.result import Status, STATUS_STYLE, STATUS_ICON, ModuleSummary
+from validator.result import Status, STATUS_STYLE, STATUS_ICON, ModuleSummary, register_observer
+from validator import debug
 
 console = Console()
 
@@ -54,10 +55,12 @@ console = Console()
               help="DDL scriptlerinin yazılacağı klasör (varsayılan: ./ddl_output)")
 @click.option("--no-color", is_flag=True, default=False,
               help="Renkli çıktıyı kapat")
+@click.option("--debug", "-d", "debug_flag", is_flag=True, default=False,
+              help="Debug mode — kontrol edilen her objeyi canlı ekrana + log dosyasına yaz")
 def main(source_schema, target_schema, modules, count_mode, sample_pct,
          refresh_stats, parallel_degree, query_timeout, skip_tables,
          only_tables, connections, validation_config,
-         generate_missing, output_dir, no_color):
+         generate_missing, output_dir, no_color, debug_flag):
     """
     Oracle 11g → 19c migration validation aracı.
 
@@ -148,6 +151,14 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             active_modules.add("row_counts")
 
     # ------------------------------------------------------------------
+    # Debug mode — YAML (debug.enabled) veya --debug ile açılır
+    # ------------------------------------------------------------------
+    if debug_flag or cfg.debug.enabled:
+        log_path = debug.enable(cfg.debug.log_file, no_color=no_color)
+        register_observer(debug.on_result)
+        console.print(f"[dim]  🐞 Debug mode aktif — log: {log_path}[/]")
+
+    # ------------------------------------------------------------------
     # Başlık
     # ------------------------------------------------------------------
     console.print()
@@ -186,6 +197,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
     for mapping in cfg.schemas:
         console.rule(f"[bold]Schema: {mapping.source} → {mapping.target}[/]")
         console.print()
+        debug.dbg("schema", f"{mapping.source} → {mapping.target} işleniyor")
 
         with get_connection(cfg.source) as src_conn, \
              get_connection(cfg.target) as tgt_conn:

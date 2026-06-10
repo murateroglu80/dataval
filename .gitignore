@@ -30,4 +30,5 @@ Thumbs.db
 
 # Çıktılar
 reports/
+logs/
 *.log
