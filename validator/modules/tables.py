@@ -35,7 +35,7 @@ SELECT
     c.constraint_name,
     c.constraint_type,
     c.status,
-    TO_CHAR(SUBSTR(c.search_condition, 1, 4000)) AS search_condition,
+    c.search_condition,
     (
         SELECT LISTAGG(cc2.column_name, ',') WITHIN GROUP (ORDER BY cc2.position)
         FROM   all_cons_columns cc2
@@ -266,9 +266,4 @@ def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
             label = TYPE_LABEL.get(ctype, ctype)
             summary.add(ValidationResult(
                 module="tables", schema=mapping.source,
-                object_type=f"CONSTRAINT({label})", object_name=tbl,
-                status=Status.WARNING,
-                source_value="(yok)",
-                target_value=cols or cond or "",
-                note=f"{label} constraint target'ta fazladan mevcut",
-            ))
+            
