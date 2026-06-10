@@ -164,17 +164,18 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             active_modules.add("row_counts")
 
     # ------------------------------------------------------------------
-    # Loglama — dosya logu HER ZAMAN açıktır (kontrol edilen her obje eksiksiz
-    # kaydedilir). --debug/debug.enabled ek olarak canlı stderr akışını açar;
-    # --log-level/debug.log_level yalnızca o canlı ekranın ayrıntı düzeyini kısar.
+    # Loglama — dosya logu HER ZAMAN açıktır (debug bayrağı gerekmez).
+    # log_level (INFO/WARNING/ERROR) hem dosyanın hem de canlı ekranın eşiğidir:
+    #   INFO=her şey (PASS dahil) · WARNING=warning+timeout+fail+error · ERROR=yalnızca fail/error
+    # --debug/debug.enabled ek olarak canlı stderr akışını açar (aynı eşikle).
     # ------------------------------------------------------------------
-    log_file_path = debug.setup_file_log(cfg.debug.log_file)
+    level = (log_level or cfg.debug.log_level or "INFO").upper()
+    log_file_path = debug.setup_file_log(cfg.debug.log_file, level=level)
     register_observer(debug.on_result)
-    console.print(f"[dim]  🗒️  Log: {log_file_path}[/]")
+    console.print(f"[dim]  🗒️  Log: {log_file_path}  (seviye: {level})[/]")
     if debug_flag or cfg.debug.enabled:
-        screen_level = (log_level or cfg.debug.log_level or "INFO").upper()
-        debug.enable_live(no_color=no_color, screen_level=screen_level)
-        console.print(f"[dim]  🐞 Canlı debug akışı aktif (seviye: {screen_level})[/]")
+        debug.enable_live(no_color=no_color, screen_level=level)
+        console.print(f"[dim]  🐞 Canlı debug akışı aktif (seviye: {level})[/]")
 
     # ------------------------------------------------------------------
     # Başlık

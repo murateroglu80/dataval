@@ -3,15 +3,15 @@ Loglama ve canlı debug akışı.
 
 İki AYRI sorumluluk:
 
-1. **Dosya logu — HER ZAMAN açık, EKSİKSİZ.** `setup_file_log()` her çalıştırmada bir
-   `FileHandler` kurar ve `result.ModuleSummary.add()` gözlemcisi (`on_result`) üzerinden
-   kontrol edilen HER objeyi (PASS dahil, tüm modüller) dosyaya yazar. Bu, terminaldeki
-   rapor tablolarının tam, kalıcı bir aynasıdır (aynı `ValidationResult` nesneleri kaynakta
-   yakalanır).
+1. **Dosya logu — HER ZAMAN açık.** `setup_file_log()` her çalıştırmada bir `FileHandler`
+   kurar ve `result.ModuleSummary.add()` gözlemcisi (`on_result`) üzerinden kontrol edilen
+   sonuçları dosyaya yazar. `log_level` eşiği (INFO/WARNING/ERROR) dosyaya neyin yazılacağını
+   belirler: INFO=her şey (PASS dahil), WARNING=warning+timeout+fail+error, ERROR=yalnızca
+   fail+error. Debug bayrağı gerekmez.
 
-2. **Canlı ekran akışı — OPT-IN + SEVİYELİ.** `enable_live()` yalnızca `--debug`/
-   `debug.enabled` iken stderr'e renkli, canlı satırlar basar. `log_level` (INFO/WARNING/
-   ERROR) eşiği ekran gürültüsünü kısar; dosya logu bundan etkilenmez (daima eksiksiz).
+2. **Canlı ekran akışı — OPT-IN.** `enable_live()` yalnızca `--debug`/`debug.enabled` iken
+   stderr'e renkli, canlı satırlar basar. Aynı `log_level` eşiğini kullanır (tek knob → hem
+   dosya hem ekran aynı ayrıntı düzeyinde).
 
 Tasarım notu: result.py hiçbir debug/IO modülünü import etmez — bağımlılık tek yönlüdür.
 Gözlemci hatası asla doğrulamayı bozmaz (add() içinde try/except ile sarılı).
@@ -38,8 +38,8 @@ _screen_level: int = logging.INFO            # canlı ekran eşik seviyesi
 
 _BASE = Path(__file__).resolve().parent.parent   # proje kök dizini
 
-# Sonuç durumu → log seviyesi. Dosya tümünü (INFO ve üstü) yazar; canlı ekran
-# yalnızca _screen_level eşiğini geçenleri gösterir.
+# Sonuç durumu → log seviyesi. Hem dosya hem canlı ekran, seçilen log_level
+# eşiğini geçen sonuçları yazar (ör. ERROR → yalnızca FAIL/ERROR).
 _RESULT_LEVEL = {
     Status.PASS:    logging.INFO,
     Status.SKIPPED: logging.INFO,
@@ -67,10 +67,14 @@ def _level_int(name: str) -> int:
 # Kurulum
 # ---------------------------------------------------------------------------
 
-def setup_file_log(log_file: str | None = None) -> str:
+def setup_file_log(log_file: str | None = None, level: str = "INFO") -> str:
     """
     Her zaman-açık dosya logunu kurar. Zaman damgalı log dosyasını hazırlar ve
-    çözülen yolu döner. Handler seviyesi INFO → kontrol edilen tüm sonuçlar yazılır.
+    çözülen yolu döner.
+
+    level: INFO/WARNING/ERROR — dosyaya yazılacak minimum sonuç seviyesi.
+           INFO=her şey (PASS dahil), WARNING=warning+timeout+fail+error,
+           ERROR=yalnızca fail+error. Canlı ekran da aynı eşiği kullanır.
 
     log_file: Boş/None ise ./logs/dataval_<YYYYMMDD_HHMMSS>.log otomatik üretilir.
     """
@@ -86,18 +90,21 @@ def setup_file_log(log_file: str | None = None) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     _log_path = str(path)
 
+    lvl = _level_int(level)
     logger = logging.getLogger("dataval.file")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(lvl)
     logger.propagate = False
     for h in list(logger.handlers):
         logger.removeHandler(h)
     handler = logging.FileHandler(_log_path, encoding="utf-8")
-    handler.setLevel(logging.INFO)
+    handler.setLevel(lvl)
     handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s",
                                            datefmt="%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
     _file_logger = logger
-    _file_logger.info("=== dataval log başladı ===")
+    # Başlık satırı, seçilen seviyeden bağımsız olarak her zaman görünsün diye
+    # aktif seviyede yazılır.
+    _file_logger.log(lvl, f"=== dataval log başladı (seviye: {logging.getLevelName(lvl)}) ===")
     return _log_path
 
 
@@ -106,7 +113,7 @@ def enable_live(no_color: bool = False, screen_level: str = "INFO") -> None:
     Canlı stderr akışını açar (yalnızca --debug/debug.enabled iken çağrılır).
 
     screen_level: INFO/WARNING/ERROR — ekranda gösterilecek minimum sonuç seviyesi.
-                  Dosya logu bundan ETKİLENMEZ; daima eksiksizdir.
+                  Genelde dosya logu ile aynı `log_level` verilir (tek eşik).
     """
     global _live_enabled, _console, _screen_level
     _console = Console(stderr=True, no_color=no_color, highlight=False)
@@ -127,7 +134,8 @@ def _fmt_val(v) -> str:
 def on_result(module: str, r) -> None:
     """
     result.ModuleSummary.add() gözlemcisi. Eklenen her ValidationResult için:
-      - dosyaya HER ZAMAN (seviye eşlemeli) yazar — eksiksiz kalıcı kayıt,
+      - dosyaya seviye eşlemeli yazar; FileHandler, log_level eşiğinin altındaki
+        sonuçları (ör. ERROR seviyesinde PASS/WARNING) süzer,
       - canlı ekran açık VE sonuç seviyesi eşiği geçiyorsa stderr'e renkli basar.
     """
     if _file_logger is None and not _live_enabled:
