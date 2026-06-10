@@ -65,9 +65,22 @@ target:
 
 Şifreleri environment variable ile geçirmek için:
 
+**Linux / macOS:**
 ```bash
 export SOURCE_DB_PASS=MyPassword
 export TARGET_DB_PASS=MyPassword
+```
+
+**Windows (PowerShell):**
+```powershell
+$env:SOURCE_DB_PASS = "MyPassword"
+$env:TARGET_DB_PASS = "MyPassword"
+```
+
+**Windows (CMD):**
+```cmd
+set SOURCE_DB_PASS=MyPassword
+set TARGET_DB_PASS=MyPassword
 ```
 
 ### 2. Validation ayarları
@@ -297,20 +310,4 @@ GRANT SELECT ON ALL_USERS        TO validator_user;
 GRANT SELECT ON ALL_TAB_PRIVS    TO validator_user;  -- GRANT script üretimi için
 GRANT EXECUTE ON DBMS_METADATA   TO validator_user;  -- DDL script üretimi için
 -- İstatistik toplamak için (opsiyonel):
-GRANT EXECUTE ON DBMS_STATS      TO validator_user;
-```
-
----
-
-## Roadmap
-
-- [ ] Paralel tablo sayımı (`ThreadPoolExecutor`)
-- [ ] PostgreSQL desteği
-- [ ] JSON çıktı modu (`--output json`)
-- [ ] CI/CD entegrasyonu için exit code yönetimi
-
----
-
-## Lisans
-
-MIT
+GRANT EXECUTE ON DBMS_STATS      TO valida
