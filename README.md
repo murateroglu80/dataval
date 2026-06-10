@@ -52,14 +52,14 @@ source:
   host: source-db.example.com
   port: 1521
   service: ORCL11G
-  username: validator_user
+  username: valuser
   password: "$SOURCE_DB_PASS"   # veya düz metin
 
 target:
   host: target-db.example.com
   port: 1521
   service: ORCL19C
-  username: validator_user
+  username: valuser
   password: "$TARGET_DB_PASS"
 ```
 
@@ -315,4 +315,4 @@ GRANT CREATE SESSION TO valuser;
 -- Validation için okuma yetkileri
 GRANT SELECT ON ALL_OBJECTS      TO valuser;
 GRANT SELECT ON ALL_TABLES       TO valuser;
-GRANT SELECT ON ALL_TAB_COLUMNS
+GRANT SELECT ON ALL_TAB_COLUMNS  TO valuser;

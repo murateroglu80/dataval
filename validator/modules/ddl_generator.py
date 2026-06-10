@@ -5,7 +5,7 @@ Desteklenen tipler: SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY,
                     TRIGGER, TYPE, TYPE BODY, SYNONYM, GRANT
 
 Çıktı: UTF-8, SQL*Plus uyumlu (.sql dosyaları)
-Dosya adlandırma: {SCHEMA}_{TYPE}.sql  {SOURCE_SCHEMA}_{TYPE}.sql
+Dosya adlandırma: {SOURCE_SCHEMA}_{TYPE}.sql
 """
 
 import re
@@ -397,12 +397,4 @@ def _write_apply_order(output_dir: Path, schema: str,
     lines += [
         "",
         "SQL*Plus ile uygulama:",
-        "  sqlplus user/pass@service @<dosya.sql>",
-        "",
-        "NOT: INVALID objeleri içeren dosyalar '-- INVALID' yorumuyla işaretlidir.",
-        "     Bu objeleri uyguladıktan sonra derleyin:",
-        "     EXEC DBMS_UTILITY.COMPILE_SCHEMA(schema => '" + schema + "');",
-    ]
-
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        " 
