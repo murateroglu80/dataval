@@ -159,8 +159,6 @@ python run.py --generate-missing
 
 # Farklı klasöre yaz
 python run.py --generate-missing --output-dir ./scripts/missing
-
-# SYSDBA bağlantısı için connections.yaml'da sysdba: true ekleyin
 ```
 
 ---
@@ -174,7 +172,7 @@ python run.py --generate-missing --output-dir ./scripts/missing
 **Önemli notlar:**
 - TABLE ve INDEX kasıtlı olarak dışarıda bırakılmıştır. Bu tipler 11g→19c arasında TABLESPACE ve STORAGE farklılıkları içerdiğinden manuel müdahale gerektirir.
 - SEQUENCE scriptleri `LAST_NUMBER` değerini korur — script `START WITH <mevcut_değer>` ile üretilir.
-- PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE → TYPE BODY de aynı şekilde.
+- PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE için TYPE BODY de aynı şekilde.
 - INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir.
 - Tüm dosyalar UTF-8 encoding ve `SET DEFINE OFF` başlığı ile SQL*Plus uyumlu üretilir.
 
@@ -192,7 +190,7 @@ ddl_output/
 ├── SOURCE_SCHEMA_TRIGGER.sql
 ├── SOURCE_SCHEMA_SYNONYM.sql
 ├── SOURCE_SCHEMA_GRANT.sql
-└── README_apply_order.txt      ← uygulama sırası ve SQL*Plus komutu
+└── README_apply_order.txt
 ```
 
 **Uygulama sırası** (bağımlılık hiyerarşisi):
@@ -208,9 +206,9 @@ PROCEDURE → PACKAGE → PACKAGE BODY → TRIGGER → GRANT
 
 | Mod | Ne yapar | Ne zaman kullan |
 |-----|----------|-----------------|
-| `exact` | `SELECT COUNT(*)` | < 1M satır |
-| `sample` | `COUNT(*) ... SAMPLE(pct%)` | 1M–100M satır |
-| `stats` | `ALL_TABLES.NUM_ROWS` | > 100M satır, sıfır I/O |
+| `exact` | SELECT COUNT(*) | < 1M satır |
+| `sample` | COUNT(*) SAMPLE(pct%) | 1M–100M satır |
+| `stats` | ALL_TABLES.NUM_ROWS | > 100M satır, sıfır I/O |
 | `auto` | Threshold'a göre otomatik seçer | Genel kullanım |
 | `skip` | Bu tabloyu atlar | Kritik olmayan büyük tablolar |
 
@@ -226,68 +224,26 @@ row_count:
 
 ---
 
-## Örnek Çıktı
-
-```
-╔══════════════════════════════════╗
-║  Oracle Migration Validator      ║
-║  11g → 19c Schema Validation     ║
-╚══════════════════════════════════╝
-
-Bağlantı testi yapılıyor...
-  ✅ SOURCE  source-db:1521/ORCL11G  — Oracle Database 11g Release 11.2.0.4.0
-  ✅ TARGET  target-db:1521/ORCL19C  — Oracle Database 19c Enterprise Edition
-
-──────────── Schema: HR → HR_NEW ────────────
-
-╭─ INVENTORY  ✅ 12  ❌ 0  ⚠️  1  ⏭️  0 ───────────────────╮
-│ TABLE       (toplam)   ✅ PASS    142      142             │
-│ INDEX       (toplam)   ⚠️  WARN   387      391  +4 fazla   │
-│ SEQUENCE    (toplam)   ✅ PASS    18       18              │
-╰────────────────────────────────────────────────────────────╯
-
-╭─ ROW_COUNTS  ✅ 138  ❌ 1  ⚠️  2  ⏱️  1 ──────────────────╮
-│ TABLE  EMPLOYEES   ✅ PASS   107 [EXACT]      107 [EXACT]  │
-│ TABLE  ORDERS      ✅ PASS   2,1M [SAMPLE]    2,1M [SAMPLE]│
-│ TABLE  AUDIT_LOG   ⏱️  TIMEOUT               >30s          │
-╰────────────────────────────────────────────────────────────╯
-
-── DDL Script Üretimi — 3 eksik obje ─────────────────────────
-  Çıktı klasörü: ./ddl_output
-  ✅ SOURCE_SCHEMA_SEQUENCE.sql  (2 obje)
-  ✅ SOURCE_SCHEMA_PACKAGE.sql   (1 obje)
-  ✅ SOURCE_SCHEMA_GRANT.sql     (14 grant)
-  ✅ 4 dosya oluşturuldu → ./ddl_output/README_apply_order.txt
-
-GENEL ÖZET
-  ✅ PASS     152
-  ❌ FAIL       3
-  ⚠️  WARNING    3
-  ⏱️  TIMEOUT    1
-```
-
----
-
 ## Proje Yapısı
 
 ```
 dataval/
 ├── config/
-│   ├── connections.yaml.example   # Şablon — bağlantı bilgileri
-│   └── validation.yaml            # Modül ve parametre ayarları
+│   ├── connections.yaml.example
+│   └── validation.yaml
 ├── validator/
-│   ├── config_loader.py           # YAML okuma, env var çözümleme
-│   ├── connection.py              # oracledb thin mode bağlantı yönetimi
-│   ├── result.py                  # ValidationResult veri modeli
+│   ├── config_loader.py
+│   ├── connection.py
+│   ├── result.py
 │   └── modules/
-│       ├── inventory.py           # Obje sayım karşılaştırması
-│       ├── tables.py              # Kolon + constraint diff
-│       ├── indexes.py             # Index yapısı karşılaştırması
-│       ├── sequences.py           # Sequence parametre kontrolü
-│       ├── code_objects.py        # DDL hash karşılaştırması
-│       ├── row_counts.py          # Akıllı row count stratejisi
-│       └── ddl_generator.py      # Eksik obje DDL script üretimi
-├── run.py                         # CLI entry point
+│       ├── inventory.py
+│       ├── tables.py
+│       ├── indexes.py
+│       ├── sequences.py
+│       ├── code_objects.py
+│       ├── row_counts.py
+│       └── ddl_generator.py
+├── run.py
 └── requirements.txt
 ```
 
@@ -298,10 +254,6 @@ dataval/
 Varsayılan kullanıcı adı `valuser`'dır. Aşağıdaki script kullanıcıyı oluşturup gerekli yetkileri verir.
 
 ```sql
--- ============================================================
--- Kullanıcı oluşturma (DBA yetkisi gerektirir)
--- Şifreyi değiştirmeyi unutmayın
--- ============================================================
 CREATE USER valuser
   IDENTIFIED BY "ChangeMe123!"
   DEFAULT TABLESPACE USERS
@@ -309,10 +261,35 @@ CREATE USER valuser
   PROFILE DEFAULT
   ACCOUNT UNLOCK;
 
--- Bağlantı ve temel yetkiler
 GRANT CREATE SESSION TO valuser;
 
--- Validation için okuma yetkileri
 GRANT SELECT ON ALL_OBJECTS      TO valuser;
 GRANT SELECT ON ALL_TABLES       TO valuser;
-GRANT SELECT ON ALL_TAB_COLUMNS  TO valuser;
+GRANT SELECT ON ALL_TAB_COLUMNS  TO valuser;
+GRANT SELECT ON ALL_CONSTRAINTS  TO valuser;
+GRANT SELECT ON ALL_CONS_COLUMNS TO valuser;
+GRANT SELECT ON ALL_INDEXES      TO valuser;
+GRANT SELECT ON ALL_IND_COLUMNS  TO valuser;
+GRANT SELECT ON ALL_SEQUENCES    TO valuser;
+GRANT SELECT ON ALL_USERS        TO valuser;
+GRANT SELECT ON ALL_TAB_PRIVS    TO valuser;
+GRANT EXECUTE ON DBMS_METADATA   TO valuser;
+GRANT EXECUTE ON DBMS_STATS      TO valuser;
+```
+
+> **Not:** `connections.yaml`'da `username: valuser` olarak ayarlayın.
+
+---
+
+## Roadmap
+
+- [ ] Paralel tablo sayımı (ThreadPoolExecutor)
+- [ ] PostgreSQL desteği
+- [ ] JSON çıktı modu (--output json)
+- [ ] CI/CD entegrasyonu için exit code yönetimi
+
+---
+
+## Lisans
+
+MIT
