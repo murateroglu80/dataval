@@ -29,6 +29,9 @@ WHERE owner = :schema
 ORDER BY table_name, column_id
 """
 
+# Oracle 11g: search_condition LONG tipindedir.
+# LONG kolonlar GROUP BY, SUBSTR, TO_CHAR gibi fonksiyonlarda kullanılamaz.
+# Çözüm: doğrudan SELECT et, GROUP BY yerine scalar subquery ile LISTAGG.
 SQL_CONSTRAINTS = """
 SELECT
     c.table_name,
@@ -63,32 +66,19 @@ ORDER BY table_name
 # ---------------------------------------------------------------------------
 
 def _normalize_type(dtype: str, precision, scale, length) -> str:
-    """
-    Karşılaştırma için veri tipini normalize eder.
-    Örnek: NUMBER(38,0) ↔ INTEGER gibi farkları tolere eder.
-    """
     dtype = (dtype or "").upper().strip()
-
-    # VARCHAR2 / NVARCHAR2 uzunluk bilgisi ile birlikte
     if dtype in ("VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"):
         return f"{dtype}({length})"
-
-    # NUMBER — precision/scale
     if dtype == "NUMBER":
         if precision is not None and scale is not None:
             return f"NUMBER({precision},{scale})"
         if precision is not None:
             return f"NUMBER({precision})"
         return "NUMBER"
-
-    # FLOAT
     if dtype == "FLOAT":
         return f"FLOAT({precision})" if precision else "FLOAT"
-
-    # CLOB / BLOB — storage farkını ignore (11g BASICFILE, 19c SECUREFILE)
     if dtype in ("CLOB", "BLOB", "NCLOB"):
         return dtype
-
     return dtype
 
 
@@ -114,17 +104,15 @@ def run(
 
     summary = ModuleSummary(module="tables")
 
-    # Source ve target tabloları al
     src_tables = {r["table_name"] for r in fetch_all(src_conn, SQL_TABLES, {"schema": mapping.source})}
     tgt_tables = {r["table_name"] for r in fetch_all(tgt_conn, SQL_TABLES, {"schema": mapping.target})}
 
-    # Tablo varlık kontrolü
     for tbl in sorted(src_tables - tgt_tables):
         summary.add(ValidationResult(
             module="tables", schema=mapping.source,
             object_type="TABLE", object_name=tbl,
             status=Status.FAIL,
-            note="Target'ta tablo mevcut değil",
+            note="Target'ta tablo mevcut degil",
         ))
 
     for tbl in sorted(tgt_tables - src_tables):
@@ -135,11 +123,9 @@ def run(
             note="Target'ta fazladan tablo var",
         ))
 
-    # Ortak tablolar — kolon karşılaştırması
     src_cols_raw = fetch_all(src_conn, SQL_COLUMNS, {"schema": mapping.source})
     tgt_cols_raw = fetch_all(tgt_conn, SQL_COLUMNS, {"schema": mapping.target})
 
-    # {table_name: {col_name: row}}
     def _index(rows):
         idx = {}
         for r in rows:
@@ -153,7 +139,6 @@ def run(
         s_cols = src_idx.get(tbl, {})
         t_cols = tgt_idx.get(tbl, {})
 
-        # Eksik kolonlar
         for col in sorted(set(s_cols) - set(t_cols)):
             summary.add(ValidationResult(
                 module="tables", schema=mapping.source,
@@ -174,31 +159,26 @@ def run(
                 note="Kolon target'ta fazladan mevcut",
             ))
 
-        # Ortak kolonlar — tip/nullable karşılaştırması
         for col in sorted(set(s_cols) & set(t_cols)):
             sr = s_cols[col]
             tr = t_cols[col]
-
             src_sig = _col_signature(sr)
             tgt_sig = _col_signature(tr)
-
             diffs = []
 
             if src_sig != tgt_sig:
-                # LOB storage farkını config'e göre değerlendir
                 if cfg.ignore.lob_storage and sr["data_type"] in ("CLOB","BLOB","NCLOB"):
-                    pass  # ignore
+                    pass
                 else:
-                    diffs.append(f"tip: {src_sig}→{tgt_sig}")
+                    diffs.append(f"tip: {src_sig}->{tgt_sig}")
 
             if sr["nullable"] != tr["nullable"]:
-                diffs.append(f"nullable: {sr['nullable']}→{tr['nullable']}")
+                diffs.append(f"nullable: {sr['nullable']}->{tr['nullable']}")
 
-            # default değer — boşlukları trim edip karşılaştır
             s_def = (sr["data_default"] or "").strip()
             t_def = (tr["data_default"] or "").strip()
             if s_def != t_def:
-                diffs.append(f"default: '{s_def}'→'{t_def}'")
+                diffs.append(f"default: '{s_def}'->'{t_def}'")
 
             if diffs:
                 summary.add(ValidationResult(
@@ -218,11 +198,7 @@ def run(
                     target_value=tgt_sig,
                 ))
 
-    # ------------------------------------------------------------------
-    # Constraint karşılaştırması
-    # ------------------------------------------------------------------
     _compare_constraints(src_conn, tgt_conn, mapping, src_tables & tgt_tables, summary)
-
     return summary
 
 
@@ -232,9 +208,8 @@ def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
 
     TYPE_LABEL = {"P": "PK", "U": "UK", "R": "FK", "C": "CHECK"}
 
-    # {table_name: [(type, columns, search_condition), ...]}
     def _key(r):
-        return (r["constraint_type"], r["columns"] or "", r["search_condition"] or "")
+        return (r["constraint_type"], r["columns"] or "", str(r["search_condition"] or ""))
 
     def _index(rows):
         idx = {}
@@ -266,4 +241,9 @@ def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
             label = TYPE_LABEL.get(ctype, ctype)
             summary.add(ValidationResult(
                 module="tables", schema=mapping.source,
-            
+                object_type=f"CONSTRAINT({label})", object_name=tbl,
+                status=Status.WARNING,
+                source_value="(yok)",
+                target_value=cols or cond or "",
+                note=f"{label} constraint target'ta fazladan mevcut",
+            ))
