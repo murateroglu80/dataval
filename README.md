@@ -295,35 +295,24 @@ dataval/
 
 ## Gerekli Yetkiler
 
-Validation kullanıcısının aşağıdaki yetkilere ihtiyacı vardır:
+Varsayılan kullanıcı adı `valuser`'dır. Aşağıdaki script kullanıcıyı oluşturup gerekli yetkileri verir.
 
 ```sql
-GRANT SELECT ON ALL_OBJECTS      TO validator_user;
-GRANT SELECT ON ALL_TABLES       TO validator_user;
-GRANT SELECT ON ALL_TAB_COLUMNS  TO validator_user;
-GRANT SELECT ON ALL_CONSTRAINTS  TO validator_user;
-GRANT SELECT ON ALL_CONS_COLUMNS TO validator_user;
-GRANT SELECT ON ALL_INDEXES      TO validator_user;
-GRANT SELECT ON ALL_IND_COLUMNS  TO validator_user;
-GRANT SELECT ON ALL_SEQUENCES    TO validator_user;
-GRANT SELECT ON ALL_USERS        TO validator_user;
-GRANT SELECT ON ALL_TAB_PRIVS    TO validator_user;  -- GRANT script üretimi için
-GRANT EXECUTE ON DBMS_METADATA   TO validator_user;  -- DDL script üretimi için
--- İstatistik toplamak için (opsiyonel):
-GRANT EXECUTE ON DBMS_STATS      TO validator_user;
-```
+-- ============================================================
+-- Kullanıcı oluşturma (DBA yetkisi gerektirir)
+-- Şifreyi değiştirmeyi unutmayın
+-- ============================================================
+CREATE USER valuser
+  IDENTIFIED BY "ChangeMe123!"
+  DEFAULT TABLESPACE USERS
+  TEMPORARY TABLESPACE TEMP
+  PROFILE DEFAULT
+  ACCOUNT UNLOCK;
 
----
+-- Bağlantı ve temel yetkiler
+GRANT CREATE SESSION TO valuser;
 
-## Roadmap
-
-- [ ] Paralel tablo sayımı (`ThreadPoolExecutor`)
-- [ ] PostgreSQL desteği
-- [ ] JSON çıktı modu (`--output json`)
-- [ ] CI/CD entegrasyonu için exit code yönetimi
-
----
-
-## Lisans
-
-MIT
+-- Validation için okuma yetkileri
+GRANT SELECT ON ALL_OBJECTS      TO valuser;
+GRANT SELECT ON ALL_TABLES       TO valuser;
+GRANT SELECT ON ALL_TAB_COLUMNS

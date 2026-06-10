@@ -10,7 +10,7 @@ source:
   host: source-db.example.com
   port: 1521
   service: ORCL11G          # service_name (SID değil)
-  username: validator_user
+  username: valuser
   password: "$SOURCE_DB_PASS"
   # sysdba: true            # SYSDBA bağlantısı için uncomment et
   # wallet_location: ""     # Oracle Wallet kullanıyorsanız
@@ -19,6 +19,6 @@ target:
   host: target-db.example.com
   port: 1521
   service: ORCL19C
-  username: validator_user
+  username: valuser
   password: "$TARGET_DB_PASS"
   # sysdba: true
