@@ -348,6 +348,52 @@ GRANT ANALYZE ANY           TO valuser;
 - Bir şema **0 obje** döndürürse araç artık sessizce TEMIZ demez; `SCHEMA ... ❌ FAIL —
   görünür obje yok (şema adı/yetki kontrol et)` uyarısı verir.
 
+### Paralel sayım — oturum gereksinimleri
+
+Paralel sayım (`parallel_workers > 1`) tek bağlantı yerine bir **bağlantı havuzu** açar.
+Bir şema işlenirken tepe eşzamanlı oturum sayısı:
+
+| Taraf | Tepe oturum | Örnek (`parallel_workers: 8`, `source_max_workers: 4`) |
+|-------|-------------|--------------------------------------------------------|
+| Source | `min(parallel_workers, source_max_workers) + 1` | **5** |
+| Target | `parallel_workers + 1` | **9** |
+
+> Şemalar sırayla işlenir → bu sayı şemalar arası **toplanmaz**, tepe yukarıdaki gibidir.
+> `+1` her tarafta istatistikleri okuyan temel bağlantıdır.
+
+**1) `SESSIONS_PER_USER` profil sınırı.** `valuser`'ın profilinde bu sınır tepe değerin
+altındaysa paralel modda **ORA-02391: exceeded simultaneous SESSIONS_PER_USER limit**
+alırsınız. Kontrol edip gerekirse yükseltin:
+
+```sql
+SELECT limit FROM dba_profiles
+ WHERE profile = (SELECT profile FROM dba_users WHERE username = 'VALUSER')
+   AND resource_name = 'SESSIONS_PER_USER';
+
+-- UNLIMITED değilse: SESSIONS_PER_USER >= parallel_workers + 2 olmalı
+ALTER PROFILE <profil> LIMIT SESSIONS_PER_USER 16;
+```
+Pratik kural: **`SESSIONS_PER_USER ≥ parallel_workers + 2`** (target en yüksek taraftır).
+
+**2) Oturum izleme (`v$session`).** Çalışma sırasında oturumları doğrulamak/izlemek için
+(`V$SESSION`, `V$SESSION_LONGOPS`, `V$SQL`) **ek yetki gerekmez** — bunlar yukarıda
+verilen **`SELECT_CATALOG_ROLE`** ile zaten gelir. Daha dar bir alternatif isterseniz:
+
+```sql
+GRANT SELECT ON V_$SESSION         TO valuser;  -- V$SESSION'ın arkasındaki view
+GRANT SELECT ON V_$SESSION_LONGOPS TO valuser;
+```
+Örnek izleme sorgusu (paralel çalışma sırasında oturum sayımı):
+```sql
+SELECT username, COUNT(*) FROM v$session
+ WHERE username = 'VALUSER' GROUP BY username;
+```
+
+**3) Oturum sonlandırma yetkisi VERİLMEZ.** `ALTER SYSTEM KILL SESSION` bir *yazma*
+işlemidir ve production source'un salt-okuma ilkesine aykırıdır. Kaçak bir `COUNT(*)`
+zaten `timeout_sec` (`callTimeout`) ile kendiliğinden TIMEOUT'a düşer; gerçekten kill
+gerekiyorsa DBA bunu araç dışında yapmalıdır.
+
 ---
 
 ## Debug Mode
