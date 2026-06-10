@@ -5,12 +5,43 @@ Thick mode: Oracle Instant Client gerekir (Oracle 11g dahil tum versiyonlar).
 SYSDBA baglantisi desteklenir.
 """
 
+import re
 import oracledb
 from contextlib import contextmanager
 from typing import Optional
 from validator.config_loader import ConnectionConfig
 
 _thick_mode_initialized = False
+
+# Gecerli (tirnaksiz) Oracle tanimlayici deseni: harf ile baslar, ardindan
+# harf/rakam/_/$/# gelir (en fazla 128 bayt). Tablo/sema adlari SQL'e string
+# olarak gomuldugunden, gomme oncesi bu desenle dogrulanir (SQL injection savunmasi).
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]*$")
+
+
+def is_valid_identifier(name: str) -> bool:
+    """
+    Verilen adin gecerli bir (tirnaksiz) Oracle tanimlayicisi olup olmadigini doner.
+    Kabul: ^[A-Za-z][A-Za-z0-9_$#]*$ ve <= 128 bayt. Bos/None → False.
+    """
+    if not name or not isinstance(name, str):
+        return False
+    if len(name.encode("utf-8")) > 128:
+        return False
+    return bool(_IDENTIFIER_RE.match(name))
+
+
+def safe_table_ref(schema: str, table: str) -> str:
+    """
+    Sema ve tablo adini dogrular, gecerliyse `SCHEMA.TABLE` referansini doner.
+    Gecersiz (tirnakli/ozel karakterli/bos) adlar icin ValueError firlatir —
+    boylece dogrulanmamis bir ad asla SQL'e gomulmez.
+    """
+    if not is_valid_identifier(schema):
+        raise ValueError(f"Gecersiz sema adi: {schema!r}")
+    if not is_valid_identifier(table):
+        raise ValueError(f"Gecersiz tablo adi: {table!r}")
+    return f"{schema}.{table}"
 
 
 def init_thick_mode(lib_dir=None):
@@ -49,10 +80,10 @@ def assert_writable(conn_cfg, operation: str):
         )
 
 
-def build_connection(cfg):
+def _connect_kwargs(cfg) -> dict:
     """
-    Verilen config'e gore Oracle baglantisi olusturur.
-    SYSDBA modu desteklenir.
+    Bir ConnectionConfig'ten oracledb.connect / create_pool icin ortak kwarg sozlugu uretir.
+    Tek kaynak — hem tekil baglanti hem havuz ayni kimlik/SYSDBA/wallet ayarlarini kullanir.
     """
     kwargs = dict(
         host=cfg.host,
@@ -61,14 +92,39 @@ def build_connection(cfg):
         user=cfg.username,
         password=cfg.password,
     )
-
     if cfg.sysdba:
         kwargs["mode"] = oracledb.AUTH_MODE_SYSDBA
-
     if cfg.wallet_location:
         kwargs["wallet_location"] = cfg.wallet_location
+    return kwargs
 
-    return oracledb.connect(**kwargs)
+
+def build_connection(cfg):
+    """
+    Verilen config'e gore Oracle baglantisi olusturur.
+    SYSDBA modu desteklenir.
+    """
+    return oracledb.connect(**_connect_kwargs(cfg))
+
+
+def build_pool(cfg, size: int):
+    """
+    Verilen config icin sabit boyutlu bir homojen baglanti havuzu olusturur.
+
+    min=max=size, increment=0 → tum oturumlar pesinen acilir; calisma ortasinda
+    "baglanti firtinasi" olmaz ve veritabani tam olarak `size` oturum gorur.
+    getmode=WAIT → havuz aninda doluysa acquire hata yerine bekler (guvenlik agi).
+
+    Cagiranin sorumlulugu: is bitince pool.close() (try/finally).
+    """
+    size = max(1, int(size))
+    return oracledb.create_pool(
+        **_connect_kwargs(cfg),
+        min=size,
+        max=size,
+        increment=0,
+        getmode=oracledb.POOL_GETMODE_WAIT,
+    )
 
 
 @contextmanager

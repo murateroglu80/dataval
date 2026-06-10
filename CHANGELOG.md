@@ -5,6 +5,27 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.4.0] - 2026-06-10
+
+### Eklenenler
+- **Paralel tablo sayımı:** `exact`/`sample` `COUNT(*)` sayımları artık `parallel_workers`
+  ile tablolar arası paralel çalışabilir. Source ve target için **ayrı `python-oracledb`
+  bağlantı havuzu + ayrı `ThreadPoolExecutor`** kullanılır (havuz boyutu = worker sayısı).
+- **Source (production) koruması:** `source_max_workers` ile source havuzu ayrıca
+  sınırlanır (etkin = `min(parallel_workers, source_max_workers)`); target tam hızda sayılır.
+- **SQL injection savunması:** tablo/şema adları SQL'e gömülmeden önce
+  `^[A-Za-z][A-Za-z0-9_$#]*$` regex'iyle doğrulanır (`is_valid_identifier` / `safe_table_ref`);
+  geçersiz ad sessizce atlanmaz, **ERROR** olarak raporlanır.
+- CLI: `--parallel-workers`, `--source-workers`.
+
+### Değişenler
+- `callTimeout` her paralel sayım bağlantısında uygulanır → kilitli/iri tablo bir worker'ı
+  süresiz bloklayamaz; tablo bazında `oracledb.DatabaseError`/timeout ayrıştırılıp
+  **TIMEOUT**/**ERROR** olarak raporlanır, diğer tablolar etkilenmez.
+- Genel özette artık **ERROR** (ve varsa TIMEOUT) görünür ve ERROR "sorun" sayılır —
+  doğrulanamayan obje yanlışlıkla "TEMIZ" raporlanmaz. `parallel_workers: 1` (varsayılan)
+  ile çıktı eski seri davranışla birebir aynıdır.
+
 ## [0.3.2] - 2026-06-10
 
 ### Eklenenler
@@ -62,6 +83,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.4.0]: https://github.com/murateroglu80/dataval/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/murateroglu80/dataval/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/murateroglu80/dataval/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/murateroglu80/dataval/compare/v0.2.0...v0.3.0

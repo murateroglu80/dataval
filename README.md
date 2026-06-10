@@ -126,6 +126,8 @@ row_count:
   mode: auto          # auto | exact | sample | stats | skip
   timeout_sec: 30
   sample_pct: 1
+  parallel_workers: 1     # tablolar arası eşzamanlılık (1 = seri)
+  source_max_workers: 4   # source (production) için ayrı, daha düşük tavan
 ```
 
 ### 3. DDL script üretimi ayarları
@@ -242,6 +244,37 @@ row_count:
     AUDIT_LOG: skip
     ORDERS: sample
 ```
+
+### Paralel sayım
+
+`exact`/`sample` sayımları varsayılan olarak **seri** çalışır. Çok tablolu şemalarda
+`parallel_workers` ile tablolar arası eşzamanlılık açılır:
+
+```yaml
+row_count:
+  mode: exact
+  parallel_workers: 8       # target: 8 eşzamanlı COUNT(*)
+  source_max_workers: 4     # source (production): en fazla 4
+```
+veya CLI: `python run.py --modules row_counts --count-mode exact --parallel-workers 8`
+
+Nasıl çalışır:
+- Source ve target için **ayrı `python-oracledb` bağlantı havuzu** + ayrı
+  `ThreadPoolExecutor` kullanılır. **Havuz boyutu = worker sayısı** (her worker kendi
+  bağlantısını alır, beklemez).
+- **Source koruması:** source havuzu `source_max_workers` ile ayrıca sınırlanır
+  (etkin = `min(parallel_workers, source_max_workers)`), böylece production 11g
+  eşzamanlı `COUNT(*)` yükünden korunur; target tam hızda sayılır.
+- `timeout_sec` her bağlantıda `callTimeout` olarak uygulanır → kilitli/iri tablo bir
+  worker'ı sonsuza dek bloklamaz (TIMEOUT). Bir tablonun hatası (ör. ORA-00942) diğerlerini
+  durdurmaz; o tablo **ERROR** olarak raporlanır.
+- Tablo/şema adları SQL'e gömülmeden önce `^[A-Za-z][A-Za-z0-9_$#]*$` ile doğrulanır;
+  geçersiz ad **ERROR** olur (SQL injection savunması).
+- `parallel_workers: 1` (varsayılan) → davranış ve çıktı eski seri yolla birebir aynı.
+
+> ⚠️ **`parallel_workers` ≠ `parallel_degree`.** `parallel_degree`, Oracle'ın *tek bir
+> sorgu içindeki* `/*+ PARALLEL(t, N) */` hint derecesidir. `parallel_workers` ise
+> *tablolar arası* thread eşzamanlılığıdır. İkisi bağımsızdır ve birlikte kullanılabilir.
 
 ---
 
