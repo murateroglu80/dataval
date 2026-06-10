@@ -35,6 +35,20 @@ def init_thick_mode(lib_dir=None):
     _thick_mode_initialized = True
 
 
+def assert_writable(conn_cfg, operation: str):
+    """
+    Read-only işaretli bir bağlantıya yazma denemesini sert şekilde engeller.
+    Source (production) koruması için savunma katmanıdır — herhangi bir kod yolu
+    yanlışlıkla source'a yazmaya kalkarsa burada PermissionError fırlatılır.
+    """
+    if getattr(conn_cfg, "read_only", False):
+        raise PermissionError(
+            f"Read-only baglantida yazma engellendi: {operation} "
+            f"({conn_cfg.dsn}). Source korumasi aktif — degistirmek icin "
+            f"connections.yaml'da ilgili baglanti altina read_only: false yazin."
+        )
+
+
 def build_connection(cfg):
     """
     Verilen config'e gore Oracle baglantisi olusturur.

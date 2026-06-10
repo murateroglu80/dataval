@@ -93,14 +93,15 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             for s, t in zip(source_schema, target_schema)
         ]
 
-    # Thick mode — source'da thick_mode: true ise etkinleştir (Oracle 11g için gerekli)
+    # Oracle Client modu — top-level `oracle_client` bloğundan belirlenir.
     # Teknik not: init_oracle_client() process-level globaldir; her iki bağlantı da
-    # thick mode'a geçer, ancak 19c thick mode'u tam destekler.
-    if cfg.source.thick_mode:
+    # thick mode'a geçer. Oracle 11g (11.2.0.4) thin mode'u desteklemez (DPY-3010),
+    # bu yüzden 11g source için mode: thick zorunludur; 19c thick'i tam destekler.
+    if cfg.oracle_client.mode == "thick":
         from validator.connection import init_thick_mode
         try:
-            init_thick_mode(cfg.source.client_lib_dir)
-            lib_info = cfg.source.client_lib_dir or "sistem PATH"
+            init_thick_mode(cfg.oracle_client.lib_dir)
+            lib_info = cfg.oracle_client.lib_dir or "sistem PATH"
             console.print(f"[dim]  ℹ️  Thick mode etkin ({lib_info})[/]")
         except Exception as e:
             console.print(f"[bold red]Thick mode başlatılamadı:[/] {e}")
@@ -167,6 +168,10 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 
     _print_conn_status("SOURCE", cfg.source.dsn, src_ok, src_info)
     _print_conn_status("TARGET", cfg.target.dsn, tgt_ok, tgt_info)
+    if cfg.source.read_only:
+        console.print("[dim]  🔒 Source read-only koruması aktif — bu bağlantıya hiçbir yazma yapılmaz.[/]")
+    else:
+        console.print("[bold yellow]  ⚠️  Source read-only KAPALI — bu bağlantıya yazma yapılabilir![/]")
     console.print()
 
     if not (src_ok and tgt_ok):

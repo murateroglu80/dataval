@@ -23,12 +23,29 @@ class ConnectionConfig:
     password: str
     sysdba: bool = False
     wallet_location: Optional[str] = None
+    # read_only: bu bağlantıya hiçbir yazma (DBMS_STATS dahil) gönderilmesini engeller.
+    # Source için varsayılan True'dur (production koruması), target için False.
+    read_only: bool = True
+    # thick_mode / client_lib_dir: GERİYE UYUMLULUK için korunur. Yeni yapılandırma
+    # connections.yaml içindeki top-level `oracle_client` bloğudur (bkz. OracleClientConfig).
     thick_mode: bool = False
     client_lib_dir: Optional[str] = None
 
     @property
     def dsn(self) -> str:
         return f"{self.host}:{self.port}/{self.service}"
+
+
+@dataclass
+class OracleClientConfig:
+    """
+    python-oracledb sürücü modu (process-global).
+    mode: "thin"  → Oracle Instant Client gerekmez (Oracle 12.1+).
+          "thick" → Instant Client gerekir; Oracle 11g (11.2.0.4 → DPY-3010) için zorunlu.
+    lib_dir: Instant Client dizini; None/boş = sistem PATH.
+    """
+    mode: str = "thin"
+    lib_dir: Optional[str] = None
 
 
 @dataclass
@@ -104,6 +121,7 @@ class AppConfig:
     row_count: RowCountConfig
     ignore: IgnoreConfig
     generate_scripts: GenerateScriptsConfig = field(default_factory=GenerateScriptsConfig)
+    oracle_client: OracleClientConfig = field(default_factory=OracleClientConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +142,10 @@ def _resolve_env(value: str) -> str:
     return value
 
 
-def _parse_connection(raw: dict) -> ConnectionConfig:
+def _parse_connection(raw: dict, is_source: bool = False) -> ConnectionConfig:
+    # read_only varsayılanı: source → True (production koruması), target → False.
+    # Kullanıcı connections.yaml'da açıkça belirtirse o değer geçerli olur.
+    default_read_only = True if is_source else False
     return ConnectionConfig(
         host=raw["host"],
         port=int(raw.get("port", 1521)),
@@ -133,9 +154,25 @@ def _parse_connection(raw: dict) -> ConnectionConfig:
         password=_resolve_env(raw["password"]),
         sysdba=raw.get("sysdba", False),
         wallet_location=raw.get("wallet_location"),
+        read_only=raw.get("read_only", default_read_only),
         thick_mode=raw.get("thick_mode", False),
         client_lib_dir=raw.get("client_lib_dir") or None,
     )
+
+
+def _parse_oracle_client(raw: dict, source_cfg: ConnectionConfig) -> OracleClientConfig:
+    """
+    Top-level `oracle_client` bloğunu okur. Blok yoksa GERİYE UYUMLULUK için
+    eski `source.thick_mode` / `source.client_lib_dir` alanlarından türetir.
+    """
+    if raw:
+        return OracleClientConfig(
+            mode=str(raw.get("mode", "thin")).lower(),
+            lib_dir=raw.get("lib_dir") or None,
+        )
+    if source_cfg.thick_mode:
+        return OracleClientConfig(mode="thick", lib_dir=source_cfg.client_lib_dir)
+    return OracleClientConfig()
 
 
 def _parse_modules(raw: dict) -> ModulesConfig:
@@ -196,14 +233,18 @@ def load_config(
     if not schemas:
         raise ValueError("validation.yaml icinde en az bir schema mapping tanimlanmali.")
 
+    source = _parse_connection(conn_raw["source"], is_source=True)
+    target = _parse_connection(conn_raw["target"], is_source=False)
+
     return AppConfig(
-        source=_parse_connection(conn_raw["source"]),
-        target=_parse_connection(conn_raw["target"]),
+        source=source,
+        target=target,
         schemas=schemas,
         modules=_parse_modules(val_raw.get("modules", {})),
         row_count=_parse_row_count(val_raw.get("row_count", {})),
         ignore=IgnoreConfig(**val_raw.get("ignore_differences", {})),
         generate_scripts=_parse_generate_scripts(val_raw.get("generate_scripts", {})),
+        oracle_client=_parse_oracle_client(conn_raw.get("oracle_client", {}), source),
     )
 
 
