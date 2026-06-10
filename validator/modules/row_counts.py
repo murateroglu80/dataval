@@ -18,6 +18,7 @@ Güvenlik mekanizmaları:
 import oracledb
 from datetime import datetime, timezone
 from validator.connection import fetch_all, fetch_one, assert_writable
+from validator.debug import dbg
 from validator.result import ValidationResult, ModuleSummary, Status
 from validator.config_loader import AppConfig, SchemaMapping
 
@@ -191,6 +192,8 @@ def run(
                 note="Config gereği atlandı",
             ))
             continue
+
+        dbg("row_counts", f"{mapping.source}.{table} sayılıyor [{mode}]")
 
         # İstatistik yaşı kontrolü
         last_analyzed = src_row.get("last_analyzed")

@@ -113,6 +113,16 @@ class GenerateScriptsConfig:
 
 
 @dataclass
+class DebugConfig:
+    """
+    Debug mode — çalışırken kontrol edilen her objeyi canlı ekrana + log dosyasına yazar.
+    log_file boş ise ./logs/dataval_<zaman>.log otomatik üretilir.
+    """
+    enabled: bool = False
+    log_file: Optional[str] = None
+
+
+@dataclass
 class AppConfig:
     source: ConnectionConfig
     target: ConnectionConfig
@@ -122,6 +132,7 @@ class AppConfig:
     ignore: IgnoreConfig
     generate_scripts: GenerateScriptsConfig = field(default_factory=GenerateScriptsConfig)
     oracle_client: OracleClientConfig = field(default_factory=OracleClientConfig)
+    debug: DebugConfig = field(default_factory=DebugConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +256,14 @@ def load_config(
         ignore=IgnoreConfig(**val_raw.get("ignore_differences", {})),
         generate_scripts=_parse_generate_scripts(val_raw.get("generate_scripts", {})),
         oracle_client=_parse_oracle_client(conn_raw.get("oracle_client", {}), source),
+        debug=_parse_debug(val_raw.get("debug", {})),
+    )
+
+
+def _parse_debug(raw: dict) -> DebugConfig:
+    return DebugConfig(
+        enabled=bool(raw.get("enabled", False)),
+        log_file=raw.get("log_file") or None,
     )
 
 

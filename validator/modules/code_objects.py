@@ -9,6 +9,7 @@ import oracledb
 from validator.connection import fetch_all, fetch_one
 from validator.result import ValidationResult, ModuleSummary, Status
 from validator.config_loader import AppConfig, SchemaMapping
+from validator.debug import dbg
 
 SQL_OBJECTS = """
 SELECT object_name, object_type, status
@@ -126,6 +127,7 @@ def run(
             notes.append("Target INVALID")
 
         # DDL çek ve karşılaştır
+        dbg("code", f"{mapping.source}.{obj_name} ({obj_type}) DDL çekiliyor")
         src_ddl = _get_ddl(src_conn, obj_type, obj_name, mapping.source)
         tgt_ddl = _get_ddl(tgt_conn, obj_type, obj_name, mapping.target)
 

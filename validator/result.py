@@ -36,6 +36,25 @@ STATUS_ICON = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Opsiyonel gözlemci (observer) kaydı.
+# Debug mode gibi katmanlar, her ValidationResult eklendiğinde haberdar olmak için
+# buraya kayıt olur. Kimse kayıtlı değilse (varsayılan) add() davranışı birebir aynıdır.
+# result.py hiçbir debug/IO modülünü import etmez — bağımlılık tek yönlüdür.
+# ---------------------------------------------------------------------------
+_observers: list = []
+
+
+def register_observer(fn) -> None:
+    """Her add()'de çağrılacak bir gözlemci ekler: fn(module: str, result: ValidationResult)."""
+    if fn not in _observers:
+        _observers.append(fn)
+
+
+def clear_observers() -> None:
+    _observers.clear()
+
+
 @dataclass
 class ValidationResult:
     module: str          # "inventory", "tables", "row_counts", ...
@@ -55,6 +74,12 @@ class ModuleSummary:
 
     def add(self, r: ValidationResult):
         self.results.append(r)
+        # Gözlemci(ler)e bildir — bir gözlemci hatası asla doğrulamayı bozmamalı.
+        for obs in _observers:
+            try:
+                obs(self.module, r)
+            except Exception:
+                pass
 
     @property
     def counts(self) -> dict:
