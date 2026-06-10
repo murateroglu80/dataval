@@ -46,6 +46,27 @@ row_count:
     sample_below: 100_000_000    # < 100M → SAMPLE ile tahmin
     # >= 100M → stats kullan
 
+# ---------------------------------------------------------------------------
+# DDL Script Üretimi — target'ta eksik objelerin create scriptlerini yazar
+# ---------------------------------------------------------------------------
+generate_scripts:
+  enabled: false                # true yapınca --generate-missing ile aktif olur
+  output_dir: ./ddl_output      # scriptlerin yazılacağı klasör
+  only_missing: true            # sadece target'ta eksik olanlar (false = tümü)
+  replace_schema: true          # DDL içinde source schema adını target ile değiştir
+  include_invalid: false        # INVALID durumdaki objeleri de üret (WARNING eklenir)
+
+  # Obje tipi bazında açma/kapama
+  types:
+    SEQUENCE:  true
+    FUNCTION:  true
+    PROCEDURE: true
+    PACKAGE:   true             # PACKAGE BODY ayrı dosyada otomatik üretilir
+    TRIGGER:   true
+    TYPE:      true             # TYPE BODY ayrı dosyada otomatik üretilir
+    SYNONYM:   false
+    GRANT:     true             # source schema üzerindeki object grant'ları
+
 ignore_differences:
   lob_storage: true        # BASICFILE vs SECUREFILE — WARNING değil, ignore
   segment_creation: true   # DEFERRED vs IMMEDIATE

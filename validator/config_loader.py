@@ -75,6 +75,25 @@ class SchemaMapping:
 
 
 @dataclass
+class GenerateScriptsConfig:
+    enabled: bool = False
+    output_dir: str = "./ddl_output"
+    only_missing: bool = True          # sadece target'ta eksik olanları üret
+    replace_schema: bool = True        # DDL içinde source schema → target schema
+    include_invalid: bool = False      # INVALID durumdaki objeleri de üret (WARNING ekler)
+    types: dict = field(default_factory=lambda: {
+        "SEQUENCE":     True,
+        "FUNCTION":     True,
+        "PROCEDURE":    True,
+        "PACKAGE":      True,
+        "TRIGGER":      True,
+        "TYPE":         True,
+        "SYNONYM":      False,
+        "GRANT":        True,
+    })
+
+
+@dataclass
 class AppConfig:
     source: ConnectionConfig
     target: ConnectionConfig
@@ -82,6 +101,7 @@ class AppConfig:
     modules: ModulesConfig
     row_count: RowCountConfig
     ignore: IgnoreConfig
+    generate_scripts: GenerateScriptsConfig = field(default_factory=GenerateScriptsConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -179,4 +199,28 @@ def load_config(
         modules=_parse_modules(val_raw.get("modules", {})),
         row_count=_parse_row_count(val_raw.get("row_count", {})),
         ignore=IgnoreConfig(**val_raw.get("ignore_differences", {})),
+        generate_scripts=_parse_generate_scripts(val_raw.get("generate_scripts", {})),
+    )
+
+
+def _parse_generate_scripts(raw: dict) -> GenerateScriptsConfig:
+    default_types = {
+        "SEQUENCE":  True,
+        "FUNCTION":  True,
+        "PROCEDURE": True,
+        "PACKAGE":   True,
+        "TRIGGER":   True,
+        "TYPE":      True,
+        "SYNONYM":   False,
+        "GRANT":     True,
+    }
+    types_raw = raw.get("types", {})
+    merged = {k: types_raw.get(k, v) for k, v in default_types.items()}
+    return GenerateScriptsConfig(
+        enabled=raw.get("enabled", False),
+        output_dir=raw.get("output_dir", "./ddl_output"),
+        only_missing=raw.get("only_missing", True),
+        replace_schema=raw.get("replace_schema", True),
+        include_invalid=raw.get("include_invalid", False),
+        types=merged,
     )

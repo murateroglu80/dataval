@@ -48,11 +48,16 @@ console = Console()
               help="Bağlantı config dosyası", show_default=True)
 @click.option("--validation-config", default="config/validation.yaml",
               help="Validation config dosyası", show_default=True)
+@click.option("--generate-missing", is_flag=True, default=False,
+              help="Target'ta eksik objelerin DDL scriptlerini üret")
+@click.option("--output-dir", default=None,
+              help="DDL scriptlerinin yazılacağı klasör (varsayılan: ./ddl_output)")
 @click.option("--no-color", is_flag=True, default=False,
               help="Renkli çıktıyı kapat")
 def main(source_schema, target_schema, modules, count_mode, sample_pct,
          refresh_stats, parallel_degree, query_timeout, skip_tables,
-         only_tables, connections, validation_config, no_color):
+         only_tables, connections, validation_config,
+         generate_missing, output_dir, no_color):
     """
     Oracle 11g → 19c migration validation aracı.
 
@@ -61,7 +66,9 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
       python run.py -s HR -t HR_NEW\n
       python run.py -s HR -t HR_NEW --modules inventory,tables,row_counts\n
       python run.py -s HR -t HR_NEW --count-mode sample --sample-pct 0.5\n
-      python run.py -s HR -t HR_NEW --skip-tables AUDIT_LOG,BIG_EVENTS
+      python run.py -s HR -t HR_NEW --skip-tables AUDIT_LOG,BIG_EVENTS\n
+      python run.py --generate-missing\n
+      python run.py --generate-missing --output-dir ./scripts/missing
     """
     global console
     if no_color:
@@ -85,6 +92,12 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             SchemaMapping(s.upper(), t.upper())
             for s, t in zip(source_schema, target_schema)
         ]
+
+    # --generate-missing flag'i config'i override eder
+    if generate_missing:
+        cfg.generate_scripts.enabled = True
+    if output_dir:
+        cfg.generate_scripts.output_dir = output_dir
 
     # CLI'dan parametre overrideları
     if count_mode:
@@ -198,6 +211,14 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
                 _print_module_results(summary)
                 all_summaries.append(summary)
 
+            # ----------------------------------------------------------
+            # DDL Script Üretimi
+            # ----------------------------------------------------------
+            if cfg.generate_scripts.enabled:
+                _run_generate_scripts(
+                    src_conn, all_summaries, mapping, cfg
+                )
+
     # ------------------------------------------------------------------
     # Genel özet
     # ------------------------------------------------------------------
@@ -207,6 +228,52 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 # ---------------------------------------------------------------------------
 # Yardımcı print fonksiyonları
 # ---------------------------------------------------------------------------
+
+def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
+    """Validation sonuçlarından eksik objeleri toplayıp DDL dosyaları üretir."""
+    from validator.modules.ddl_generator import generate_scripts
+    from validator.result import Status
+
+    gs_cfg = cfg.generate_scripts
+
+    # FAIL sonuçlarından eksik objeleri topla
+    # "eksik" = source'da var, target'ta yok → source_value dolu, target_value boş
+    missing: dict[str, list[str]] = {}
+    for sm in summaries:
+        for r in sm.results:
+            if r.status == Status.FAIL and r.target_value in (None, "", "—", "-"):
+                obj_type = (r.object_type or "").upper()
+                if obj_type not in missing:
+                    missing[obj_type] = []
+                if r.object_name not in missing[obj_type]:
+                    missing[obj_type].append(r.object_name)
+
+    if not any(missing.values()):
+        console.print("[dim]  ℹ️  Generate scripts: eksik obje bulunamadı.[/]")
+        return
+
+    total_missing = sum(len(v) for v in missing.values())
+    console.rule(f"[bold cyan]DDL Script Üretimi[/] — {total_missing} eksik obje")
+    console.print(f"  Çıktı klasörü: [cyan]{gs_cfg.output_dir}[/]")
+    console.print()
+
+    created = generate_scripts(
+        source_conn=src_conn,
+        missing_objects=missing,
+        source_schema=mapping.source,
+        target_schema=mapping.target,
+        cfg=gs_cfg,
+        console=console,
+    )
+
+    console.print()
+    if created:
+        console.print(
+            f"[bold green]✅ {len(created)} dosya oluşturuldu → "
+            f"{gs_cfg.output_dir}/README_apply_order.txt[/]"
+        )
+    console.print()
+
 
 def _print_conn_status(label: str, dsn: str, ok: bool, info: str):
     icon  = "✅" if ok else "❌"
