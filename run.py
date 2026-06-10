@@ -62,12 +62,15 @@ console = Console()
 @click.option("--no-color", is_flag=True, default=False,
               help="Renkli çıktıyı kapat")
 @click.option("--debug", "-d", "debug_flag", is_flag=True, default=False,
-              help="Debug mode — kontrol edilen her objeyi canlı ekrana + log dosyasına yaz")
+              help="Canlı debug akışı — kontrol edilen her objeyi anlık olarak ekrana (stderr) yaz")
+@click.option("--log-level", default=None,
+              type=click.Choice(["INFO", "WARNING", "ERROR"]),
+              help="Canlı debug ekran ayrıntı düzeyi (dosya logu daima eksiksizdir)")
 def main(source_schema, target_schema, modules, count_mode, sample_pct,
          refresh_stats, parallel_degree, parallel_workers, source_workers,
          query_timeout, skip_tables,
          only_tables, connections, validation_config,
-         generate_missing, output_dir, no_color, debug_flag):
+         generate_missing, output_dir, no_color, debug_flag, log_level):
     """
     Oracle 11g → 19c migration validation aracı.
 
@@ -154,7 +157,6 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         if mc.indexes:             active_modules.add("indexes")
         if mc.constraints:         active_modules.add("constraints")
         if mc.sequences:           active_modules.add("sequences")
-        if mc.grants:              active_modules.add("grants")
         if mc.code_objects_enabled: active_modules.add("code")
         # row_counts ayrıca -- her zaman tables modülüne eşlik eder
         # veya açıkça belirtilirse çalışır
@@ -162,12 +164,17 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             active_modules.add("row_counts")
 
     # ------------------------------------------------------------------
-    # Debug mode — YAML (debug.enabled) veya --debug ile açılır
+    # Loglama — dosya logu HER ZAMAN açıktır (kontrol edilen her obje eksiksiz
+    # kaydedilir). --debug/debug.enabled ek olarak canlı stderr akışını açar;
+    # --log-level/debug.log_level yalnızca o canlı ekranın ayrıntı düzeyini kısar.
     # ------------------------------------------------------------------
+    log_file_path = debug.setup_file_log(cfg.debug.log_file)
+    register_observer(debug.on_result)
+    console.print(f"[dim]  🗒️  Log: {log_file_path}[/]")
     if debug_flag or cfg.debug.enabled:
-        log_path = debug.enable(cfg.debug.log_file, no_color=no_color)
-        register_observer(debug.on_result)
-        console.print(f"[dim]  🐞 Debug mode aktif — log: {log_path}[/]")
+        screen_level = (log_level or cfg.debug.log_level or "INFO").upper()
+        debug.enable_live(no_color=no_color, screen_level=screen_level)
+        console.print(f"[dim]  🐞 Canlı debug akışı aktif (seviye: {screen_level})[/]")
 
     # ------------------------------------------------------------------
     # Başlık
@@ -246,6 +253,12 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             if "tables" in active_modules:
                 from validator.modules.tables import run as run_tables
                 summary = run_tables(src_conn, tgt_conn, mapping, cfg)
+                _print_module_results(summary)
+                all_summaries.append(summary)
+
+            if "constraints" in active_modules:
+                from validator.modules.constraints import run as run_constraints
+                summary = run_constraints(src_conn, tgt_conn, mapping, cfg)
                 _print_module_results(summary)
                 all_summaries.append(summary)
 

@@ -116,6 +116,7 @@ schemas:
 modules:
   inventory: true
   tables: true
+  constraints: true   # PK/UK/FK/CHECK karşılaştırması — AYRI modül (aşağıya bkz)
   indexes: true
   sequences: true
   code_objects:
@@ -129,6 +130,12 @@ row_count:
   parallel_workers: 1     # tablolar arası eşzamanlılık (1 = seri)
   source_max_workers: 4   # source (production) için ayrı, daha düşük tavan
 ```
+
+> **Constraints ayrı bir modüldür.** PK/UK/FK/CHECK karşılaştırması `modules.constraints`
+> bayrağıyla yönetilir ve `tables`'tan bağımsız çalışır/kapanır. `constraints: false` →
+> hiç constraint kontrolü yapılmaz (kendi paneli de basılmaz). `--modules constraints` ile
+> tek başına da çalıştırılabilir. (Önceden bu kontrol `tables` modülüne gömülüydü ve bu
+> bayrağı yok sayıyordu; artık düzeltildi.)
 
 ### 3. DDL script üretimi ayarları
 
@@ -396,35 +403,56 @@ gerekiyorsa DBA bunu araç dışında yapmalıdır.
 
 ---
 
-## Debug Mode
+## Loglama ve Debug Mode
 
-Doğrulama çalışırken kontrol edilen **her objeyi canlı** görmek ve bir log dosyasına
-yazmak için debug mode'u açın. Her obje için şema-nitelikli ad, source ve target değeri
-ve sonuç durumu satır satır akar.
+İki ayrı katman vardır:
+
+**1. Dosya logu — HER ZAMAN açık, eksiksiz.** Her çalıştırmada zaman damgalı bir log
+dosyası üretilir ve kontrol edilen **her obje** (PASS dahil, tüm modüller) eksiksiz olarak
+dosyaya yazılır. Bu, terminaldeki rapor tablolarının kalıcı, tam aynasıdır (aynı sonuçlar
+kaynakta — `ModuleSummary.add()` gözlemcisiyle — yakalanır). Ekstra bir bayrak gerekmez.
+
+```
+🗒️  Log: /.../logs/dataval_20260610_184500.log
+```
+
+**2. Canlı debug akışı — opt-in + seviyeli.** Doğrulama çalışırken kontrol edilen her
+objeyi **canlı** (stderr) görmek istersen aç. Her obje için şema-nitelikli ad, source/target
+değeri ve durum satır satır akar.
 
 `config/validation.yaml`:
 
 ```yaml
 debug:
-  enabled: true       # debug mode on
+  enabled: true       # canlı stderr akışını aç
   log_file: ""        # boş = ./logs/dataval_<zaman>.log otomatik
+  log_level: INFO     # CANLI EKRAN ayrıntı düzeyi (dosya daima eksiksiz)
 ```
 
 veya CLI ile (YAML'ı override eder):
 
 ```bash
-python run.py --debug          # veya -d
+python run.py --debug                      # canlı akış, INFO (her şey)
+python run.py --debug --log-level WARNING  # ekranda yalnızca WARNING/FAIL/ERROR/TIMEOUT
 ```
 
-**Çıktı:**
-- **Ekran (stderr):** `· [tables] CTROMSADMIN.ORDERS  src=1,250  tgt=1,250  ✅ PASS`
-- **Log dosyası:** her çalışmada zaman damgalı yeni dosya — `./logs/dataval_20260610_184500.log`
+**`log_level` katmanı** yalnızca **canlı ekranı** kısar; dosya logu bundan etkilenmez:
 
-Debug çıktısı ayrı bir akışta (stderr) olduğundan asıl rapor (stdout) bozulmaz; istersen
+| Seviye | Canlı ekranda görünen |
+|--------|-----------------------|
+| `INFO`    | her şey (PASS/SKIPPED dahil) |
+| `WARNING` | WARNING + TIMEOUT + FAIL + ERROR |
+| `ERROR`   | yalnızca FAIL + ERROR |
+
+**Çıktı:**
+- **Ekran (stderr):** `· [constraints] HR.ORDERS  src=ID  tgt=-  ❌ FAIL`
+- **Log dosyası:** `2026-06-10 18:45:00  ERROR    [constraints] HR.ORDERS source=ID target=- FAIL — PK constraint target'ta eksik`
+
+Canlı akış ayrı bir akışta (stderr) olduğundan asıl rapor (stdout) bozulmaz; istersen
 ayırabilirsin:
 
 ```bash
-python run.py --debug 2> debug_ekran.log    # ekran debug'ını ayrı dosyaya
+python run.py --debug 2> debug_ekran.log    # ekran akışını ayrı dosyaya
 ```
 
 > `logs/` ve `*.log` `.gitignore`'da olduğundan log dosyaları commit edilmez.

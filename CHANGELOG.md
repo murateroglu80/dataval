@@ -5,6 +5,24 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.5.0] - 2026-06-10
+
+### Düzeltilenler
+- **Constraints config bypass:** `modules.constraints: false` yok sayılıyordu. Constraint
+  (PK/UK/FK/CHECK) karşılaştırması `tables` modülüne gömülü ve **koşulsuz** çalışıyordu;
+  `constraints` bayrağının router'da karşılığı yoktu. Constraint mantığı artık first-class
+  bir `constraints` modülüne taşındı ve `modules.constraints` bayrağıyla (veya
+  `--modules constraints` ile) yönetiliyor. `false` → hiç constraint kontrolü yapılmaz.
+- **Ölü `grants` bayrağı:** `modules.grants: true` sessizce hiçbir şey yapmıyordu (runner'ı
+  yoktu). Yanıltıcı router eşlemesi kaldırıldı; gerçek grants doğrulama modülü gelecek iştir.
+
+### Değişenler
+- **Loglama — her zaman açık dosya logu + seviye katmanı:** Artık her çalıştırmada (debug
+  gerekmeden) eksiksiz bir log dosyası üretilir; kontrol edilen her obje (PASS dahil, tüm
+  modüller) dosyaya yazılır — terminal raporunun kalıcı aynası. `--debug`/`debug.enabled`
+  yalnızca canlı stderr akışını açar. Yeni `log_level` (INFO/WARNING/ERROR, CLI: `--log-level`)
+  **yalnızca canlı ekran** ayrıntısını kısar; dosya logu daima eksiksiz kalır.
+
 ## [0.4.0] - 2026-06-10
 
 ### Eklenenler
@@ -83,6 +101,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.5.0]: https://github.com/murateroglu80/dataval/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/murateroglu80/dataval/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/murateroglu80/dataval/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/murateroglu80/dataval/compare/v0.3.0...v0.3.1

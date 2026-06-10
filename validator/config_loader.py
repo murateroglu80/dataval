@@ -123,11 +123,16 @@ class GenerateScriptsConfig:
 @dataclass
 class DebugConfig:
     """
-    Debug mode — çalışırken kontrol edilen her objeyi canlı ekrana + log dosyasına yazar.
-    log_file boş ise ./logs/dataval_<zaman>.log otomatik üretilir.
+    Loglama / debug ayarları.
+    - Dosya logu HER ZAMAN üretilir (enabled'dan bağımsız); log_file boş ise
+      ./logs/dataval_<zaman>.log otomatik üretilir.
+    - enabled: True → ek olarak canlı stderr akışı açılır (--debug ile de açılabilir).
+    - log_level (INFO/WARNING/ERROR): yalnızca CANLI EKRAN ayrıntı düzeyini belirler;
+      dosya logu daima eksiksizdir.
     """
     enabled: bool = False
     log_file: Optional[str] = None
+    log_level: str = "INFO"
 
 
 @dataclass
@@ -274,6 +279,7 @@ def _parse_debug(raw: dict) -> DebugConfig:
     return DebugConfig(
         enabled=bool(raw.get("enabled", False)),
         log_file=raw.get("log_file") or None,
+        log_level=str(raw.get("log_level", "INFO")).upper(),
     )
 
 
