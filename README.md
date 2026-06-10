@@ -182,16 +182,16 @@ python run.py --generate-missing --output-dir ./scripts/missing
 
 ```
 ddl_output/
-├── CTROMSADMIN_TYPE.sql
-├── CTROMSADMIN_TYPE_BODY.sql
-├── CTROMSADMIN_SEQUENCE.sql
-├── CTROMSADMIN_FUNCTION.sql
-├── CTROMSADMIN_PROCEDURE.sql
-├── CTROMSADMIN_PACKAGE.sql
-├── CTROMSADMIN_PACKAGE_BODY.sql
-├── CTROMSADMIN_TRIGGER.sql
-├── CTROMSADMIN_SYNONYM.sql
-├── CTROMSADMIN_GRANT.sql
+├── SOURCE_SCHEMA_TYPE.sql
+├── SOURCE_SCHEMA_TYPE_BODY.sql
+├── SOURCE_SCHEMA_SEQUENCE.sql
+├── SOURCE_SCHEMA_FUNCTION.sql
+├── SOURCE_SCHEMA_PROCEDURE.sql
+├── SOURCE_SCHEMA_PACKAGE.sql
+├── SOURCE_SCHEMA_PACKAGE_BODY.sql
+├── SOURCE_SCHEMA_TRIGGER.sql
+├── SOURCE_SCHEMA_SYNONYM.sql
+├── SOURCE_SCHEMA_GRANT.sql
 └── README_apply_order.txt      ← uygulama sırası ve SQL*Plus komutu
 ```
 
@@ -254,9 +254,9 @@ Bağlantı testi yapılıyor...
 
 ── DDL Script Üretimi — 3 eksik obje ─────────────────────────
   Çıktı klasörü: ./ddl_output
-  ✅ CTROMSADMIN_SEQUENCE.sql  (2 obje)
-  ✅ CTROMSADMIN_PACKAGE.sql   (1 obje)
-  ✅ CTROMSADMIN_GRANT.sql     (14 grant)
+  ✅ SOURCE_SCHEMA_SEQUENCE.sql  (2 obje)
+  ✅ SOURCE_SCHEMA_PACKAGE.sql   (1 obje)
+  ✅ SOURCE_SCHEMA_GRANT.sql     (14 grant)
   ✅ 4 dosya oluşturuldu → ./ddl_output/README_apply_order.txt
 
 GENEL ÖZET

@@ -5,7 +5,7 @@ Desteklenen tipler: SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY,
                     TRIGGER, TYPE, TYPE BODY, SYNONYM, GRANT
 
 Çıktı: UTF-8, SQL*Plus uyumlu (.sql dosyaları)
-Dosya adlandırma: {SCHEMA}_{TYPE}.sql  örn: CTROMSADMIN_SEQUENCE.sql
+Dosya adlandırma: {SCHEMA}_{TYPE}.sql  {SOURCE_SCHEMA}_{TYPE}.sql
 """
 
 import re
@@ -165,7 +165,7 @@ def _get_grant_statements(conn, schema: str, target_schema: str,
                           replace_schema: bool) -> list[str]:
     """
     Source schema üzerindeki object grant'larını GRANT ifadesi olarak döndürür.
-    Örn: GRANT SELECT ON CTROMSADMIN.ORDERS TO APP_USER
+    Örn: GRANT SELECT ON TARGET_SCHEMA.TABLE_NAME TO APP_USER
     """
     sql = """
         SELECT GRANTEE, TABLE_NAME, PRIVILEGE,
@@ -385,7 +385,7 @@ def _write_apply_order(output_dir: Path, schema: str,
     # Sıralı dosyaları APPLY_ORDER'a göre sırala
     order_map = {t.replace(" ", "_"): i for i, t in enumerate(APPLY_ORDER)}
     def sort_key(f):
-        name = Path(f).stem  # CTROMSADMIN_PACKAGE_BODY
+        name = Path(f).stem  # SOURCE_SCHEMA_PACKAGE_BODY
         parts = name.split("_", 1)
         type_part = parts[1] if len(parts) > 1 else ""
         return order_map.get(type_part, 99)

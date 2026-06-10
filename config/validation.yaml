@@ -1,8 +1,8 @@
 # Oracle Validator - Validation Configuration
 
 schemas:
-  - source: CTROMSADMIN
-    target: CTROMSADMIN
+  - source: SOURCE_SCHEMA
+    target: TARGET_SCHEMA
   # - source: FINANCE
   #   target: FINANCE_NEW
 
