@@ -6,6 +6,19 @@
 #   1. Düz metin    : password: "MyPass123"
 #   2. Env variable : password: "$SOURCE_DB_PASS"  → export SOURCE_DB_PASS=MyPass123
 
+# ---------------------------------------------------------------------------
+# Oracle Client modu (python-oracledb sürücüsü) — process-global ayar
+#   mode: thin   → Oracle Instant Client gerekmez (Oracle 12.1+)
+#   mode: thick  → Instant Client gerekir; Oracle 11g için ZORUNLU.
+#                  (11.2.0.4 thin mode'da DPY-3010 hatası verir)
+#   lib_dir: Instant Client dizini. Boş = sistem PATH.
+#            Örnek (Windows): C:/oracle/instantclient_21_9
+#            Örnek (Linux):   /opt/oracle/instantclient_21_9
+# ---------------------------------------------------------------------------
+oracle_client:
+  mode: thick
+  lib_dir: ""
+
 source:
   host: source-db.example.com
   port: 1521
@@ -15,10 +28,9 @@ source:
   # sysdba: true            # SYSDBA bağlantısı için uncomment et
   # wallet_location: ""     # Oracle Wallet kullanıyorsanız
   #
-  # Oracle 11g gibi eski versiyonlar thin mode desteklemez.
-  # Oracle Instant Client kurulduktan sonra aşağıdaki satırları aktif edin:
-  # thick_mode: true
-  # client_lib_dir: ""      # Boş = sistem PATH. Örnek: C:/oracle/instantclient_21_9
+  # read_only: source production olduğu için varsayılan TRUE'dur — bu bağlantıya
+  # DBMS_STATS dahil hiçbir yazma yapılmaz. Yalnızca gerçekten gerekiyorsa açın:
+  # read_only: false
 
 target:
   host: target-db.example.com
@@ -27,3 +39,4 @@ target:
   username: valuser
   password: "$TARGET_DB_PASS"
   # sysdba: true
+  # read_only: false        # target varsayılanı zaten false (stats yenilenebilir)

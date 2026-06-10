@@ -15,7 +15,8 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar WARNING olarak işaretlenir, FAIL değil
-- **Sıfır Oracle Client** — `python-oracledb` thin mode; Oracle Instant Client kurulumu gerekmez
+- **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
+- **Thin / Thick mode** — `python-oracledb` thin mode (Oracle 12.1+, Instant Client gerekmez) veya thick mode (Oracle 11g için zorunlu). Tek satır config ile seçilir
 - **SYSDBA desteği** — `connections.yaml`'da `sysdba: true` ile DBA bağlantısı
 
 ---
@@ -48,12 +49,21 @@ cp config/connections.yaml.example config/connections.yaml
 `config/connections.yaml` dosyasını düzenleyin:
 
 ```yaml
+# Oracle Client modu (process-global)
+#   thin  → Instant Client gerekmez (Oracle 12.1+)
+#   thick → Instant Client gerekir; Oracle 11g için ZORUNLU (11.2.0.4 → DPY-3010)
+oracle_client:
+  mode: thick
+  lib_dir: ""                   # boş = sistem PATH; örn: C:/oracle/instantclient_21_9
+
 source:
   host: source-db.example.com
   port: 1521
   service: ORCL11G
   username: valuser
   password: "$SOURCE_DB_PASS"   # veya düz metin
+  # read_only varsayılan TRUE — source'a hiçbir yazma yapılmaz.
+  # read_only: false            # yalnızca gerçekten gerekiyorsa
 
 target:
   host: target-db.example.com
@@ -62,6 +72,17 @@ target:
   username: valuser
   password: "$TARGET_DB_PASS"
 ```
+
+> **Source read-only koruması:** Source production kabul edildiğinden `read_only`
+> varsayılanı **true**'dur. `--refresh-stats` verseniz bile source'a `DBMS_STATS`
+> gönderilmez (yalnızca target yenilenir, sonuca WARNING eklenir). Source'ta taze satır
+> sayısı için `--count-mode exact` (salt-okuma `COUNT(*)`) kullanın.
+
+> **Thin vs Thick:** Oracle 11.2 source thin mode'da `DPY-3010` verir; bu yüzden 11g→19c
+> doğrulamasında `oracle_client.mode: thick` ve Oracle Instant Client gereklidir. Thick
+> mode process-global olduğundan her iki bağlantı da thick üzerinden çalışır (19c thick'i
+> tam destekler). Instant Client kurulumu için bkz.
+> [docs/troubleshooting.md](docs/troubleshooting.md).
 
 Şifreleri environment variable ile geçirmek için:
 
@@ -280,6 +301,26 @@ GRANT EXECUTE ON DBMS_STATS      TO valuser;
 > **Not:** `connections.yaml`'da `username: valuser` olarak ayarlayın.
 
 ---
+
+## Bilinen Sorunlar / Troubleshooting
+
+11g → 19c taşımalarında karşılaşılan farklar ve hatalar ayrı belgelerde toplanmıştır:
+
+- **[docs/migration-11g-to-19c.md](docs/migration-11g-to-19c.md)** — bilinen 11g→19c
+  farkları ve dataval'in her birini nasıl ele aldığı (LONG kolonlar, LOB storage, segment
+  creation, CHECK koşulu biçimi, INVALID objeler, sequence LAST_NUMBER, …).
+- **[docs/troubleshooting.md](docs/troubleshooting.md)** — sık ORA/DPY hataları ve
+  çözümleri (DPY-3010, ORA-00932, thick mode başlatma, ORA-00942/01031 yetki, timeout).
+
+Hızlı referans:
+
+| Belirti | Olası neden | Bakınız |
+|---------|-------------|---------|
+| `DPY-3010` bağlantıda | 11g'ye thin mode | troubleshooting → thick mode |
+| `ORA-00932 expected CHAR got LONG` | data dictionary LONG kolonu | migration §2 (giderildi) |
+| `DPI-1047 / cannot locate Oracle Client` | Instant Client yok/PATH dışı | troubleshooting → thick |
+| `PermissionError: Read-only baglantida...` | source koruması (beklenen) | troubleshooting → read-only |
+| `TIMEOUT` statüsü | büyük tabloda exact sayım | `--skip-tables` / `--count-mode sample` |
 
 ## Roadmap
 

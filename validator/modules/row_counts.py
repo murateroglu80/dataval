@@ -17,7 +17,7 @@ Güvenlik mekanizmaları:
 
 import oracledb
 from datetime import datetime, timezone
-from validator.connection import fetch_all, fetch_one
+from validator.connection import fetch_all, fetch_one, assert_writable
 from validator.result import ValidationResult, ModuleSummary, Status
 from validator.config_loader import AppConfig, SchemaMapping
 
@@ -121,8 +121,9 @@ def _count_sample(conn: oracledb.Connection, schema: str, table: str,
         conn.callTimeout = 0
 
 
-def _refresh_stats(conn: oracledb.Connection, schema: str, table: str, degree: int = 4):
-    """DBMS_STATS.GATHER_TABLE_STATS çalıştırır."""
+def _refresh_stats(conn_cfg, conn: oracledb.Connection, schema: str, table: str, degree: int = 4):
+    """DBMS_STATS.GATHER_TABLE_STATS çalıştırır. Read-only bağlantıda engellenir."""
+    assert_writable(conn_cfg, "DBMS_STATS.GATHER_TABLE_STATS")
     cursor = conn.cursor()
     cursor.callproc(
         "DBMS_STATS.GATHER_TABLE_STATS",
@@ -201,20 +202,25 @@ def run(
         elif age_days > rc.stats_max_age_days:
             stale_warning = f"İstatistik {age_days} gün önce toplandı"
 
-        # --refresh-stats varsa önce istatistik topla
+        # --refresh-stats varsa önce istatistik topla.
+        # Source read-only ise source'a DBMS_STATS gönderilmez; sadece target yenilenir.
         if rc.refresh_stats and mode in ("stats", "auto"):
             try:
-                _refresh_stats(src_conn, mapping.source, table)
-                _refresh_stats(tgt_conn, mapping.target, table)
-                # Güncellenen değerleri al
-                updated = fetch_one(
-                    src_conn,
-                    "SELECT num_rows FROM all_tables WHERE owner=:s AND table_name=:t",
-                    {"s": mapping.source, "t": table}
-                )
-                if updated:
-                    src_num_rows = updated["num_rows"]
-                    stale_warning = None
+                if cfg.source.read_only:
+                    ro_note = "source read-only — istatistik yenilenmedi"
+                    stale_warning = f"{stale_warning}; {ro_note}" if stale_warning else ro_note
+                else:
+                    _refresh_stats(cfg.source, src_conn, mapping.source, table)
+                    updated = fetch_one(
+                        src_conn,
+                        "SELECT num_rows FROM all_tables WHERE owner=:s AND table_name=:t",
+                        {"s": mapping.source, "t": table}
+                    )
+                    if updated:
+                        src_num_rows = updated["num_rows"]
+                        stale_warning = None
+
+                _refresh_stats(cfg.target, tgt_conn, mapping.target, table)
             except Exception as e:
                 stale_warning = f"Stats toplama hatası: {e}"
 
