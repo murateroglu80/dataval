@@ -397,4 +397,12 @@ def _write_apply_order(output_dir: Path, schema: str,
     lines += [
         "",
         "SQL*Plus ile uygulama:",
-        " 
+        "  sqlplus user/pass@service @<dosya.sql>",
+        "",
+        "NOT: INVALID objeleri iceren dosyalar -- INVALID yorumuyla isaretlidir.",
+        "     Bu objeleri uyguladiktan sonra derleyin:",
+        "     EXEC DBMS_UTILITY.COMPILE_SCHEMA(schema => '" + schema + "');",
+    ]
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
