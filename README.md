@@ -272,7 +272,15 @@ dataval/
 
 ## Gerekli Yetkiler
 
-Varsayılan kullanıcı adı `valuser`'dır. Aşağıdaki script kullanıcıyı oluşturup gerekli yetkileri verir.
+`valuser`, **başka şemaların** (ör. `CTROMSADMIN`) objelerini doğrular. Oracle'da
+`ALL_*` sözlük görünümleri yalnızca kullanıcının **yetkili olduğu** objelerin satırlarını
+gösterir; dolayısıyla başka bir şemayı görebilmek için **sistem (ANY) yetkileri** gerekir.
+
+> ⚠️ **Sık yapılan hata:** Yalnızca `GRANT SELECT ON ALL_TABLES ...` vermek **yetmez** —
+> bu görünümler zaten PUBLIC'e açıktır ve satır görünürlüğünü değiştirmez. Sonuç: araç
+> "0 obje" görür ve yanıltıcı şekilde **TEMIZ** raporlar. Aşağıdaki ANY yetkileri gereklidir.
+
+Aşağıdaki script kullanıcıyı oluşturup **salt-okuma** doğrulama için gereken yetkileri verir:
 
 ```sql
 CREATE USER valuser
@@ -284,21 +292,28 @@ CREATE USER valuser
 
 GRANT CREATE SESSION TO valuser;
 
-GRANT SELECT ON ALL_OBJECTS      TO valuser;
-GRANT SELECT ON ALL_TABLES       TO valuser;
-GRANT SELECT ON ALL_TAB_COLUMNS  TO valuser;
-GRANT SELECT ON ALL_CONSTRAINTS  TO valuser;
-GRANT SELECT ON ALL_CONS_COLUMNS TO valuser;
-GRANT SELECT ON ALL_INDEXES      TO valuser;
-GRANT SELECT ON ALL_IND_COLUMNS  TO valuser;
-GRANT SELECT ON ALL_SEQUENCES    TO valuser;
-GRANT SELECT ON ALL_USERS        TO valuser;
-GRANT SELECT ON ALL_TAB_PRIVS    TO valuser;
-GRANT EXECUTE ON DBMS_METADATA   TO valuser;
-GRANT EXECUTE ON DBMS_STATS      TO valuser;
+-- Diğer şemaların objelerini ALL_* görünümlerinde GÖREBİLMEK için (metadata görünürlüğü)
+GRANT SELECT ANY TABLE      TO valuser;   -- tablo/view metadata + row_counts COUNT(*)
+GRANT SELECT ANY SEQUENCE   TO valuser;   -- sequence'ler
+GRANT EXECUTE ANY PROCEDURE TO valuser;   -- procedure / function / package görünürlüğü
+GRANT EXECUTE ANY TYPE      TO valuser;   -- type görünürlüğü
+
+-- DBMS_METADATA.GET_DDL'in BAŞKA şemaların DDL'ini çıkarabilmesi + katalog erişimi
+GRANT SELECT_CATALOG_ROLE   TO valuser;   -- alternatif: GRANT SELECT ANY DICTIONARY
+
+-- (YALNIZCA target'ta --refresh-stats kullanacaksanız. Source read-only olduğundan
+--  orada DBMS_STATS asla çalıştırılmaz — kod düzeyinde de engellenir.)
+GRANT ANALYZE ANY           TO valuser;
 ```
 
-> **Not:** `connections.yaml`'da `username: valuser` olarak ayarlayın.
+**Notlar:**
+- Tüm bu yetkiler **salt-okuma**dır (SELECT / EXECUTE / ANALYZE) — veri değiştirmez.
+  `SELECT ANY TABLE` yalnızca okuma (COUNT/SELECT) sağlar, yazma içermez.
+- `connections.yaml`'da `username: valuser` olarak ayarlayın.
+- **Alternatif (daha kolay):** DBA yetkili bir kullanıcıyla ya da `connections.yaml`'da
+  `sysdba: true` ile bağlanırsanız bu ANY yetkilerine gerek kalmaz.
+- Bir şema **0 obje** döndürürse araç artık sessizce TEMIZ demez; `SCHEMA ... ❌ FAIL —
+  görünür obje yok (şema adı/yetki kontrol et)` uyarısı verir.
 
 ---
 

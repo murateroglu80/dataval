@@ -12,8 +12,10 @@ from rich.panel import Panel
 from rich import box
 
 from validator.config_loader import load_config, SchemaMapping
-from validator.connection import test_connection, get_connection
-from validator.result import Status, STATUS_STYLE, STATUS_ICON, ModuleSummary, register_observer
+from validator.connection import test_connection, get_connection, fetch_one
+from validator.result import (
+    Status, STATUS_STYLE, STATUS_ICON, ModuleSummary, ValidationResult, register_observer
+)
 from validator import debug
 
 console = Console()
@@ -201,6 +203,30 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 
         with get_connection(cfg.source) as src_conn, \
              get_connection(cfg.target) as tgt_conn:
+
+            # Preflight — source şemada hiç görünür obje yoksa modülleri çalıştırmak
+            # anlamsızdır ve yanıltıcı "TEMIZ" raporuna yol açar. Şema adı veya yetki
+            # (SELECT ANY TABLE vb.) sorununu sessiz geçmek yerine FAIL olarak yakala.
+            src_obj_cnt = fetch_one(
+                src_conn,
+                "SELECT COUNT(*) AS c FROM all_objects "
+                "WHERE owner = :s AND object_name NOT LIKE 'BIN$%'",
+                {"s": mapping.source},
+            )
+            if not src_obj_cnt or (src_obj_cnt.get("c") or 0) == 0:
+                pre = ModuleSummary(module="preflight")
+                pre.add(ValidationResult(
+                    module="preflight", schema=mapping.source,
+                    object_type="SCHEMA", object_name=mapping.source,
+                    status=Status.FAIL,
+                    source_value="0 obje",
+                    target_value="",
+                    note=("Source şemada görünür obje yok — şema adını ve yetkileri "
+                          "(SELECT ANY TABLE vb.) kontrol edin"),
+                ))
+                _print_module_results(pre)
+                all_summaries.append(pre)
+                continue
 
             if "inventory" in active_modules:
                 from validator.modules.inventory import run as run_inventory
