@@ -93,6 +93,18 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             for s, t in zip(source_schema, target_schema)
         ]
 
+    # Thick mode — Oracle 11g gibi eski versiyonlar için
+    if cfg.thick_mode:
+        from validator.connection import init_thick_mode
+        try:
+            init_thick_mode(cfg.client_lib_dir)
+            console.print(f"[dim]  ℹ️  Thick mode etkin "
+                          f"({'sistem PATH' if not cfg.client_lib_dir else cfg.client_lib_dir})[/]")
+        except Exception as e:
+            console.print(f"[bold red]Thick mode başlatılamadı:[/] {e}")
+            console.print("[dim]  Oracle Instant Client kurulu ve PATH'te olmalı.[/]")
+            sys.exit(1)
+
     # --generate-missing flag'i config'i override eder
     if generate_missing:
         cfg.generate_scripts.enabled = True
@@ -337,23 +349,4 @@ def _print_overall_summary(summaries: list[ModuleSummary]):
     for status, n in total.items():
         if n == 0:
             continue
-        style = STATUS_STYLE[status]
-        icon  = STATUS_ICON[status]
-        t.add_row(f"[{style}]{icon} {status.value}[/]", f"[{style}]{n}[/]")
-
-    console.print(t)
-    console.print()
-
-    overall_ok = total[Status.FAIL] == 0 and total[Status.ERROR] == 0
-    if overall_ok:
-        console.print("[bold green]✅ Validation tamamlandı — kritik hata yok.[/]")
-    else:
-        console.print(
-            f"[bold red]❌ Validation tamamlandı — "
-            f"{total[Status.FAIL]} FAIL, {total[Status.ERROR]} ERROR.[/]"
-        )
-    console.print()
-
-
-if __name__ == "__main__":
-    main()
+        style = STATUS_STYL

@@ -102,6 +102,8 @@ class AppConfig:
     row_count: RowCountConfig
     ignore: IgnoreConfig
     generate_scripts: GenerateScriptsConfig = field(default_factory=GenerateScriptsConfig)
+    thick_mode: bool = False
+    client_lib_dir: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +194,7 @@ def load_config(
     if not schemas:
         raise ValueError("validation.yaml içinde en az bir schema mapping tanımlanmalı.")
 
+    thick_raw = conn_raw.get("thick_mode", {}) or {}
     return AppConfig(
         source=_parse_connection(conn_raw["source"]),
         target=_parse_connection(conn_raw["target"]),
@@ -200,6 +203,8 @@ def load_config(
         row_count=_parse_row_count(val_raw.get("row_count", {})),
         ignore=IgnoreConfig(**val_raw.get("ignore_differences", {})),
         generate_scripts=_parse_generate_scripts(val_raw.get("generate_scripts", {})),
+        thick_mode=bool(thick_raw.get("enabled", False)),
+        client_lib_dir=thick_raw.get("lib_dir") or None,
     )
 
 
@@ -218,9 +223,4 @@ def _parse_generate_scripts(raw: dict) -> GenerateScriptsConfig:
     merged = {k: types_raw.get(k, v) for k, v in default_types.items()}
     return GenerateScriptsConfig(
         enabled=raw.get("enabled", False),
-        output_dir=raw.get("output_dir", "./ddl_output"),
-        only_missing=raw.get("only_missing", True),
-        replace_schema=raw.get("replace_schema", True),
-        include_invalid=raw.get("include_invalid", False),
-        types=merged,
-    )
+        output_d

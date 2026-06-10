@@ -1,6 +1,7 @@
 """
-Oracle bağlantı yönetimi — python-oracledb thin mode.
-Oracle Instant Client gerekmez.
+Oracle bağlantı yönetimi — python-oracledb thin/thick mode.
+Thin mode: Oracle Instant Client gerekmez (Oracle 12.1+).
+Thick mode: Oracle Instant Client gerekir (Oracle 11g dahil tüm versiyonlar).
 SYSDBA bağlantısı desteklenir.
 """
 
@@ -9,9 +10,29 @@ from contextlib import contextmanager
 from typing import Optional
 from validator.config_loader import ConnectionConfig
 
+_thick_mode_initialized = False
 
-# oracledb thin mode — client kurulumu gerektirmez
-# (thick mode için: oracledb.init_oracle_client() çağrısı gerekir)
+
+def init_thick_mode(lib_dir: Optional[str] = None) -> None:
+    """
+    Thick mode'u etkinleştirir — tüm bağlantılar için geçerlidir.
+    Oracle 11g gibi eski versiyonlar için gereklidir.
+
+    lib_dir: Oracle Instant Client dizini.
+             None ise sistem PATH'inden bulunmaya çalışılır.
+
+    Örnek:
+      Windows: C:/oracle/instantclient_21_9
+      Linux:   /opt/oracle/instantclient_21_9
+    """
+    global _thick_mode_initialized
+    if _thick_mode_initialized:
+        return
+    if lib_dir:
+        oracledb.init_oracle_client(lib_dir=lib_dir)
+    else:
+        oracledb.init_oracle_client()
+    _thick_mode_initialized = True
 
 
 def build_connection(cfg: ConnectionConfig) -> oracledb.Connection:
@@ -73,21 +94,4 @@ def test_connection(cfg: ConnectionConfig) -> tuple[bool, str]:
         (error,) = e.args
         return False, f"ORA-{error.code}: {error.message.strip()}"
     except Exception as e:
-        return False, str(e)
-
-
-def fetch_all(conn: oracledb.Connection, sql: str, params: Optional[dict] = None) -> list[dict]:
-    """
-    SQL çalıştırır, sonuçları dict listesi olarak döner.
-    params: named bind variables — {'schema': 'HR', ...}
-    """
-    cursor = conn.cursor()
-    cursor.execute(sql, params or {})
-    cols = [col[0].lower() for col in cursor.description]
-    return [dict(zip(cols, row)) for row in cursor.fetchall()]
-
-
-def fetch_one(conn: oracledb.Connection, sql: str, params: Optional[dict] = None) -> Optional[dict]:
-    """Tek satır döner, sonuç yoksa None."""
-    rows = fetch_all(conn, sql, params)
-    return rows[0] if rows else None
+        
