@@ -1,7 +1,7 @@
 # dataval
 
 **dataval** — Database migration validation tool.  
-Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıca doğrular.
+Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıca doğrular ve eksik objelerin DDL scriptlerini otomatik üretir.
 
 ---
 
@@ -13,6 +13,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Sequence kontrolü** — INCREMENT_BY, MIN/MAX, CACHE, CYCLE parametreleri; LAST_NUMBER toleransı
 - **Kod objeleri** — DDL hash karşılaştırması (whitespace normalize, schema adı soyutlanır)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
+- **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar WARNING olarak işaretlenir, FAIL değil
 - **Sıfır Oracle Client** — `python-oracledb` thin mode; Oracle Instant Client kurulumu gerekmez
 - **SYSDBA desteği** — `connections.yaml`'da `sysdba: true` ile DBA bağlantısı
@@ -93,6 +94,27 @@ row_count:
   sample_pct: 1
 ```
 
+### 3. DDL script üretimi ayarları
+
+```yaml
+generate_scripts:
+  enabled: false                # true yapınca --generate-missing ile aktif olur
+  output_dir: ./ddl_output      # scriptlerin yazılacağı klasör
+  only_missing: true            # sadece target'ta eksik olanlar
+  replace_schema: true          # DDL içinde source schema adını target ile değiştir
+  include_invalid: false        # INVALID durumdaki objeleri de üret (WARNING eklenir)
+
+  types:
+    SEQUENCE:  true
+    FUNCTION:  true
+    PROCEDURE: true
+    PACKAGE:   true             # PACKAGE BODY ayrı dosyada otomatik üretilir
+    TRIGGER:   true
+    TYPE:      true             # TYPE BODY ayrı dosyada otomatik üretilir
+    SYNONYM:   false
+    GRANT:     true             # source schema üzerindeki object grant'ları
+```
+
 ---
 
 ## Kullanım
@@ -119,7 +141,52 @@ python run.py --modules row_counts --only-tables ORDERS,CUSTOMERS
 # İstatistik tazele, sonra say
 python run.py --modules row_counts --count-mode exact --refresh-stats
 
+# Validation + eksik objelerin DDL scriptlerini üret
+python run.py --generate-missing
+
+# Farklı klasöre yaz
+python run.py --generate-missing --output-dir ./scripts/missing
+
 # SYSDBA bağlantısı için connections.yaml'da sysdba: true ekleyin
+```
+
+---
+
+## DDL Script Üretimi
+
+`--generate-missing` flag'i validation sonucunda target'ta eksik bulunan objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur.
+
+**Desteklenen tipler:** SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER, TYPE, TYPE BODY, SYNONYM, GRANT
+
+**Önemli notlar:**
+- TABLE ve INDEX kasıtlı olarak dışarıda bırakılmıştır. Bu tipler 11g→19c arasında TABLESPACE ve STORAGE farklılıkları içerdiğinden manuel müdahale gerektirir.
+- SEQUENCE scriptleri `LAST_NUMBER` değerini korur — script `START WITH <mevcut_değer>` ile üretilir.
+- PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE → TYPE BODY de aynı şekilde.
+- INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir.
+- Tüm dosyalar UTF-8 encoding ve `SET DEFINE OFF` başlığı ile SQL*Plus uyumlu üretilir.
+
+**Çıktı dosya yapısı:**
+
+```
+ddl_output/
+├── CTROMSADMIN_TYPE.sql
+├── CTROMSADMIN_TYPE_BODY.sql
+├── CTROMSADMIN_SEQUENCE.sql
+├── CTROMSADMIN_FUNCTION.sql
+├── CTROMSADMIN_PROCEDURE.sql
+├── CTROMSADMIN_PACKAGE.sql
+├── CTROMSADMIN_PACKAGE_BODY.sql
+├── CTROMSADMIN_TRIGGER.sql
+├── CTROMSADMIN_SYNONYM.sql
+├── CTROMSADMIN_GRANT.sql
+└── README_apply_order.txt      ← uygulama sırası ve SQL*Plus komutu
+```
+
+**Uygulama sırası** (bağımlılık hiyerarşisi):
+
+```
+TYPE → TYPE BODY → SEQUENCE → SYNONYM → FUNCTION →
+PROCEDURE → PACKAGE → PACKAGE BODY → TRIGGER → GRANT
 ```
 
 ---
@@ -172,9 +239,16 @@ Bağlantı testi yapılıyor...
 │ TABLE  AUDIT_LOG   ⏱️  TIMEOUT               >30s          │
 ╰────────────────────────────────────────────────────────────╯
 
+── DDL Script Üretimi — 3 eksik obje ─────────────────────────
+  Çıktı klasörü: ./ddl_output
+  ✅ CTROMSADMIN_SEQUENCE.sql  (2 obje)
+  ✅ CTROMSADMIN_PACKAGE.sql   (1 obje)
+  ✅ CTROMSADMIN_GRANT.sql     (14 grant)
+  ✅ 4 dosya oluşturuldu → ./ddl_output/README_apply_order.txt
+
 GENEL ÖZET
   ✅ PASS     152
-  ❌ FAIL       1
+  ❌ FAIL       3
   ⚠️  WARNING    3
   ⏱️  TIMEOUT    1
 ```
@@ -198,7 +272,8 @@ dataval/
 │       ├── indexes.py             # Index yapısı karşılaştırması
 │       ├── sequences.py           # Sequence parametre kontrolü
 │       ├── code_objects.py        # DDL hash karşılaştırması
-│       └── row_counts.py          # Akıllı row count stratejisi
+│       ├── row_counts.py          # Akıllı row count stratejisi
+│       └── ddl_generator.py      # Eksik obje DDL script üretimi
 ├── run.py                         # CLI entry point
 └── requirements.txt
 ```
@@ -210,25 +285,25 @@ dataval/
 Validation kullanıcısının aşağıdaki yetkilere ihtiyacı vardır:
 
 ```sql
-GRANT SELECT ON ALL_OBJECTS    TO validator_user;
-GRANT SELECT ON ALL_TABLES     TO validator_user;
-GRANT SELECT ON ALL_TAB_COLUMNS TO validator_user;
-GRANT SELECT ON ALL_CONSTRAINTS TO validator_user;
+GRANT SELECT ON ALL_OBJECTS      TO validator_user;
+GRANT SELECT ON ALL_TABLES       TO validator_user;
+GRANT SELECT ON ALL_TAB_COLUMNS  TO validator_user;
+GRANT SELECT ON ALL_CONSTRAINTS  TO validator_user;
 GRANT SELECT ON ALL_CONS_COLUMNS TO validator_user;
-GRANT SELECT ON ALL_INDEXES    TO validator_user;
-GRANT SELECT ON ALL_IND_COLUMNS TO validator_user;
-GRANT SELECT ON ALL_SEQUENCES  TO validator_user;
-GRANT SELECT ON ALL_USERS      TO validator_user;
-GRANT EXECUTE ON DBMS_METADATA TO validator_user;  -- kod objesi DDL için
+GRANT SELECT ON ALL_INDEXES      TO validator_user;
+GRANT SELECT ON ALL_IND_COLUMNS  TO validator_user;
+GRANT SELECT ON ALL_SEQUENCES    TO validator_user;
+GRANT SELECT ON ALL_USERS        TO validator_user;
+GRANT SELECT ON ALL_TAB_PRIVS    TO validator_user;  -- GRANT script üretimi için
+GRANT EXECUTE ON DBMS_METADATA   TO validator_user;  -- DDL script üretimi için
 -- İstatistik toplamak için (opsiyonel):
-GRANT EXECUTE ON DBMS_STATS    TO validator_user;
+GRANT EXECUTE ON DBMS_STATS      TO validator_user;
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] `grants.py` — Object privilege karşılaştırması
 - [ ] Paralel tablo sayımı (`ThreadPoolExecutor`)
 - [ ] PostgreSQL desteği
 - [ ] JSON çıktı modu (`--output json`)
