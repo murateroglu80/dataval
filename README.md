@@ -407,42 +407,45 @@ gerekiyorsa DBA bunu araç dışında yapmalıdır.
 
 İki ayrı katman vardır:
 
-**1. Dosya logu — HER ZAMAN açık, eksiksiz.** Her çalıştırmada zaman damgalı bir log
-dosyası üretilir ve kontrol edilen **her obje** (PASS dahil, tüm modüller) eksiksiz olarak
-dosyaya yazılır. Bu, terminaldeki rapor tablolarının kalıcı, tam aynasıdır (aynı sonuçlar
-kaynakta — `ModuleSummary.add()` gözlemcisiyle — yakalanır). Ekstra bir bayrak gerekmez.
+**1. Dosya logu — HER ZAMAN açık.** Her çalıştırmada zaman damgalı bir log dosyası
+üretilir; kontrol edilen sonuçlar `ModuleSummary.add()` gözlemcisiyle kaynakta yakalanıp
+dosyaya yazılır. Ekstra bir bayrak gerekmez.
 
 ```
-🗒️  Log: /.../logs/dataval_20260610_184500.log
+🗒️  Log: /.../logs/dataval_20260610_184500.log  (seviye: INFO)
 ```
 
-**2. Canlı debug akışı — opt-in + seviyeli.** Doğrulama çalışırken kontrol edilen her
-objeyi **canlı** (stderr) görmek istersen aç. Her obje için şema-nitelikli ad, source/target
-değeri ve durum satır satır akar.
+**2. Canlı debug akışı — opt-in.** Doğrulama çalışırken kontrol edilen her objeyi **canlı**
+(stderr) görmek istersen aç. Her obje için şema-nitelikli ad, source/target değeri ve durum
+satır satır akar.
 
 `config/validation.yaml`:
 
 ```yaml
 debug:
-  enabled: true       # canlı stderr akışını aç
+  enabled: true       # canlı stderr akışını aç (dosya logu zaten her zaman açık)
   log_file: ""        # boş = ./logs/dataval_<zaman>.log otomatik
-  log_level: INFO     # CANLI EKRAN ayrıntı düzeyi (dosya daima eksiksiz)
+  log_level: INFO     # HEM dosya HEM ekran eşiği — yalnızca sorunlar için: ERROR
 ```
 
 veya CLI ile (YAML'ı override eder):
 
 ```bash
+python run.py --log-level ERROR            # dosya + ekran: yalnızca FAIL/ERROR
 python run.py --debug                      # canlı akış, INFO (her şey)
-python run.py --debug --log-level WARNING  # ekranda yalnızca WARNING/FAIL/ERROR/TIMEOUT
+python run.py --debug --log-level WARNING  # WARNING/FAIL/ERROR/TIMEOUT
 ```
 
-**`log_level` katmanı** yalnızca **canlı ekranı** kısar; dosya logu bundan etkilenmez:
+**`log_level`** tek bir eşiktir ve **hem dosyayı hem canlı ekranı** birlikte kısar:
 
-| Seviye | Canlı ekranda görünen |
-|--------|-----------------------|
+| Seviye | Dosyaya + ekrana yazılan |
+|--------|--------------------------|
 | `INFO`    | her şey (PASS/SKIPPED dahil) |
 | `WARNING` | WARNING + TIMEOUT + FAIL + ERROR |
 | `ERROR`   | yalnızca FAIL + ERROR |
+
+> Yalnızca başarısız (FAIL/ERROR) satırları görmek istiyorsan `log_level: ERROR` ayarla —
+> dosya da bu eşikle süzülür, PASS satırları yazılmaz.
 
 **Çıktı:**
 - **Ekran (stderr):** `· [constraints] HR.ORDERS  src=ID  tgt=-  ❌ FAIL`

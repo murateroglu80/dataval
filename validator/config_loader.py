@@ -126,9 +126,10 @@ class DebugConfig:
     Loglama / debug ayarları.
     - Dosya logu HER ZAMAN üretilir (enabled'dan bağımsız); log_file boş ise
       ./logs/dataval_<zaman>.log otomatik üretilir.
+    - log_level (INFO/WARNING/ERROR): HEM dosyanın HEM canlı ekranın eşiği.
+      INFO=her şey (PASS dahil), WARNING=warning+timeout+fail+error,
+      ERROR=yalnızca fail+error.
     - enabled: True → ek olarak canlı stderr akışı açılır (--debug ile de açılabilir).
-    - log_level (INFO/WARNING/ERROR): yalnızca CANLI EKRAN ayrıntı düzeyini belirler;
-      dosya logu daima eksiksizdir.
     """
     enabled: bool = False
     log_file: Optional[str] = None
