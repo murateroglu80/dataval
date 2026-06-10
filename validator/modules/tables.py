@@ -35,17 +35,18 @@ SELECT
     c.constraint_name,
     c.constraint_type,
     c.status,
-    c.search_condition,
-    LISTAGG(cc.column_name, ',') WITHIN GROUP (ORDER BY cc.position) AS columns
+    TO_CHAR(SUBSTR(c.search_condition, 1, 4000)) AS search_condition,
+    (
+        SELECT LISTAGG(cc2.column_name, ',') WITHIN GROUP (ORDER BY cc2.position)
+        FROM   all_cons_columns cc2
+        WHERE  cc2.owner           = c.owner
+           AND cc2.constraint_name = c.constraint_name
+    ) AS columns
 FROM all_constraints c
-JOIN all_cons_columns cc
-    ON cc.owner = c.owner
-   AND cc.constraint_name = c.constraint_name
 WHERE c.owner  = :schema
   AND c.constraint_type IN ('P', 'U', 'R', 'C')
   AND c.constraint_name NOT LIKE 'BIN$%'
   AND c.constraint_name NOT LIKE 'SYS_%'
-GROUP BY c.table_name, c.constraint_name, c.constraint_type, c.status, c.search_condition
 ORDER BY c.table_name, c.constraint_type, c.constraint_name
 """
 
