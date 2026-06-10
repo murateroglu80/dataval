@@ -345,3 +345,21 @@ def _print_overall_summary(summaries: list[ModuleSummary]):
             total[s] += n
 
     t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    t.add_column("Durum",  width=12)
+    t.add_column("Sayı",   width=8, justify="right")
+
+    t.add_row("[green]✅ PASS[/]",       str(total[Status.PASS]))
+    t.add_row("[red]❌ FAIL[/]",         str(total[Status.FAIL]))
+    t.add_row("[yellow]⚠️  WARNING[/]",  str(total[Status.WARNING]))
+    t.add_row("[dim]⏭️  SKIPPED[/]",    str(total[Status.SKIPPED]))
+
+    overall_ok = total[Status.FAIL] == 0
+    title_style = "bold green" if overall_ok else "bold red"
+    overall_label = "✅ TEMIZ" if overall_ok else f"❌ {total[Status.FAIL]} SORUN"
+
+    console.print(Panel(t, title=f"[{title_style}]{overall_label}[/]", box=box.ROUNDED, padding=(0, 2)))
+    console.print()
+
+
+if __name__ == "__main__":
+    main()
