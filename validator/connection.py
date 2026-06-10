@@ -1,8 +1,8 @@
 """
-Oracle bağlantı yönetimi — python-oracledb thin/thick mode.
+Oracle baglanti yonetimi -- python-oracledb thin/thick mode.
 Thin mode: Oracle Instant Client gerekmez (Oracle 12.1+).
-Thick mode: Oracle Instant Client gerekir (Oracle 11g dahil tüm versiyonlar).
-SYSDBA bağlantısı desteklenir.
+Thick mode: Oracle Instant Client gerekir (Oracle 11g dahil tum versiyonlar).
+SYSDBA baglantisi desteklenir.
 """
 
 import oracledb
@@ -13,15 +13,15 @@ from validator.config_loader import ConnectionConfig
 _thick_mode_initialized = False
 
 
-def init_thick_mode(lib_dir: Optional[str] = None) -> None:
+def init_thick_mode(lib_dir=None):
     """
-    Thick mode'u etkinleştirir — tüm bağlantılar için geçerlidir.
-    Oracle 11g gibi eski versiyonlar için gereklidir.
+    Thick mode'u etkinlestirir -- tum baglantilar icin gecerlidir.
+    Oracle 11g gibi eski versiyonlar icin gereklidir.
 
     lib_dir: Oracle Instant Client dizini.
-             None ise sistem PATH'inden bulunmaya çalışılır.
+             None ise sistem PATH'inden bulunmaya calisilir.
 
-    Örnek:
+    Ornek:
       Windows: C:/oracle/instantclient_21_9
       Linux:   /opt/oracle/instantclient_21_9
     """
@@ -35,9 +35,9 @@ def init_thick_mode(lib_dir: Optional[str] = None) -> None:
     _thick_mode_initialized = True
 
 
-def build_connection(cfg: ConnectionConfig) -> oracledb.Connection:
+def build_connection(cfg):
     """
-    Verilen config'e göre Oracle bağlantısı oluşturur.
+    Verilen config'e gore Oracle baglantisi olusturur.
     SYSDBA modu desteklenir.
     """
     kwargs = dict(
@@ -58,12 +58,12 @@ def build_connection(cfg: ConnectionConfig) -> oracledb.Connection:
 
 
 @contextmanager
-def get_connection(cfg: ConnectionConfig, timeout_ms: Optional[int] = None):
+def get_connection(cfg, timeout_ms=None):
     """
-    Context manager — bağlantıyı açar, işi bitince kapatır.
+    Context manager -- baglantiyi acar, isi bitince kapatir.
 
-    timeout_ms: Her sorgu için maksimum süre (ms).
-                Aşılırsa ORA-03136 fırlatılır.
+    timeout_ms: Her sorgu icin maksimum sure (ms).
+                Asilirsa ORA-03136 firlatilir.
     """
     conn = build_connection(cfg)
     try:
@@ -74,10 +74,10 @@ def get_connection(cfg: ConnectionConfig, timeout_ms: Optional[int] = None):
         conn.close()
 
 
-def test_connection(cfg: ConnectionConfig) -> tuple[bool, str]:
+def test_connection(cfg):
     """
-    Bağlantıyı test eder.
-    Dönüş: (başarılı_mı, mesaj)
+    Baglantiyi test eder.
+    Donus: (basarili_mi, mesaj)
     """
     try:
         with get_connection(cfg) as conn:
@@ -94,4 +94,21 @@ def test_connection(cfg: ConnectionConfig) -> tuple[bool, str]:
         (error,) = e.args
         return False, f"ORA-{error.code}: {error.message.strip()}"
     except Exception as e:
-        
+        return False, str(e)
+
+
+def fetch_all(conn, sql, params=None):
+    """
+    SQL calistirir, sonuclari dict listesi olarak doner.
+    params: named bind variables -- {'schema': 'HR', ...}
+    """
+    cursor = conn.cursor()
+    cursor.execute(sql, params or {})
+    cols = [col[0].lower() for col in cursor.description]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def fetch_one(conn, sql, params=None):
+    """Tek satir doner, sonuc yoksa None."""
+    rows = fetch_all(conn, sql, params)
+    return rows[0] if rows else None
