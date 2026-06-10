@@ -93,13 +93,15 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             for s, t in zip(source_schema, target_schema)
         ]
 
-    # Thick mode — Oracle 11g gibi eski versiyonlar için
-    if cfg.thick_mode:
+    # Thick mode — source'da thick_mode: true ise etkinleştir (Oracle 11g için gerekli)
+    # Teknik not: init_oracle_client() process-level globaldir; her iki bağlantı da
+    # thick mode'a geçer, ancak 19c thick mode'u tam destekler.
+    if cfg.source.thick_mode:
         from validator.connection import init_thick_mode
         try:
-            init_thick_mode(cfg.client_lib_dir)
-            console.print(f"[dim]  ℹ️  Thick mode etkin "
-                          f"({'sistem PATH' if not cfg.client_lib_dir else cfg.client_lib_dir})[/]")
+            init_thick_mode(cfg.source.client_lib_dir)
+            lib_info = cfg.source.client_lib_dir or "sistem PATH"
+            console.print(f"[dim]  ℹ️  Thick mode etkin ({lib_info})[/]")
         except Exception as e:
             console.print(f"[bold red]Thick mode başlatılamadı:[/] {e}")
             console.print("[dim]  Oracle Instant Client kurulu ve PATH'te olmalı.[/]")
@@ -343,10 +345,3 @@ def _print_overall_summary(summaries: list[ModuleSummary]):
             total[s] += n
 
     t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-    t.add_column(width=12)
-    t.add_column(width=8, justify="right")
-
-    for status, n in total.items():
-        if n == 0:
-            continue
-        style = STATUS_STYL

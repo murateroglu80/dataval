@@ -6,15 +6,24 @@
 #   1. Düz metin    : password: "MyPass123"
 #   2. Env variable : password: "$SOURCE_DB_PASS"  → export SOURCE_DB_PASS=MyPass123
 
-# Thick mode — Oracle 11g veya Oracle Instant Client kullanıyorsanız etkinleştirin.
-# Oracle 12.1+ için gerekli değildir (thin mode yeterlidir).
-#
-# thick_mode:
-#   enabled: true
-#   lib_dir: ""     # Boş bırakırsanız sistem PATH'i kullanılır.
-#                   # Windows: C:/oracle/instantclient_21_9
-#                   # Linux  : /opt/oracle/instantclient_21_9
-
 source:
   host: source-db.example.com
   port: 1521
+  service: ORCL11G          # service_name (SID değil)
+  username: valuser
+  password: "$SOURCE_DB_PASS"
+  # sysdba: true            # SYSDBA bağlantısı için uncomment et
+  # wallet_location: ""     # Oracle Wallet kullanıyorsanız
+  #
+  # Oracle 11g gibi eski versiyonlar thin mode desteklemez.
+  # Oracle Instant Client kurulduktan sonra aşağıdaki satırları aktif edin:
+  # thick_mode: true
+  # client_lib_dir: ""      # Boş = sistem PATH. Örnek: C:/oracle/instantclient_21_9
+
+target:
+  host: target-db.example.com
+  port: 1521
+  service: ORCL19C
+  username: valuser
+  password: "$TARGET_DB_PASS"
+  # sysdba: true
