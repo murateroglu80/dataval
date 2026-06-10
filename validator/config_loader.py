@@ -53,7 +53,15 @@ class RowCountConfig:
     mode: str = "auto"
     sample_pct: float = 1.0
     timeout_sec: int = 30
+    # parallel_degree: Oracle'in TEK SORGU ICI PARALLEL hint derecesi (intra-query).
     parallel_degree: int = 0
+    # parallel_workers: TABLOLAR ARASI thread eszamanliligi (inter-table). 1 = seri
+    # (mevcut davranis, varsayilan). >1 → exact/sample sayimlari ThreadPoolExecutor +
+    # baglanti havuzu ile paralel calisir.
+    parallel_workers: int = 1
+    # source_max_workers: source (production) havuzu icin ayri, daha dusuk tavan.
+    # Etkin source worker = max(1, min(parallel_workers, source_max_workers)).
+    source_max_workers: int = 4
     refresh_stats: bool = False
     stats_max_age_days: int = 7
     overrides: dict = field(default_factory=dict)
@@ -211,6 +219,8 @@ def _parse_row_count(raw: dict) -> RowCountConfig:
         sample_pct=float(raw.get("sample_pct", 1.0)),
         timeout_sec=int(raw.get("timeout_sec", 30)),
         parallel_degree=int(raw.get("parallel_degree", 0)),
+        parallel_workers=int(raw.get("parallel_workers", 1)),
+        source_max_workers=int(raw.get("source_max_workers", 4)),
         refresh_stats=raw.get("refresh_stats", False),
         stats_max_age_days=int(raw.get("stats_max_age_days", 7)),
         overrides=raw.get("overrides") or {},

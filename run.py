@@ -40,7 +40,11 @@ console = Console()
 @click.option("--refresh-stats", is_flag=True, default=False,
               help="Count öncesi DBMS_STATS çalıştır")
 @click.option("--parallel-degree", default=None, type=int,
-              help="Parallel sorgu derecesi (0=kapalı)")
+              help="Oracle tek-sorgu-içi PARALLEL hint derecesi (0=kapalı)")
+@click.option("--parallel-workers", default=None, type=int,
+              help="Tablolar arası eşzamanlı sayım worker sayısı (1=seri)")
+@click.option("--source-workers", default=None, type=int,
+              help="Source (production) havuzu için ayrı worker tavanı")
 @click.option("--query-timeout", default=None, type=int,
               help="Saniye cinsinden sorgu timeout")
 @click.option("--skip-tables", default=None,
@@ -60,7 +64,8 @@ console = Console()
 @click.option("--debug", "-d", "debug_flag", is_flag=True, default=False,
               help="Debug mode — kontrol edilen her objeyi canlı ekrana + log dosyasına yaz")
 def main(source_schema, target_schema, modules, count_mode, sample_pct,
-         refresh_stats, parallel_degree, query_timeout, skip_tables,
+         refresh_stats, parallel_degree, parallel_workers, source_workers,
+         query_timeout, skip_tables,
          only_tables, connections, validation_config,
          generate_missing, output_dir, no_color, debug_flag):
     """
@@ -128,6 +133,10 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         cfg.row_count.refresh_stats = True
     if parallel_degree is not None:
         cfg.row_count.parallel_degree = parallel_degree
+    if parallel_workers is not None:
+        cfg.row_count.parallel_workers = parallel_workers
+    if source_workers is not None:
+        cfg.row_count.source_max_workers = source_workers
     if query_timeout is not None:
         cfg.row_count.timeout_sec = query_timeout
 
@@ -260,6 +269,13 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 
             if "row_counts" in active_modules:
                 from validator.modules.row_counts import run as run_counts
+                rcc = cfg.row_count
+                if rcc.parallel_workers and rcc.parallel_workers > 1:
+                    src_w = max(1, min(rcc.parallel_workers, rcc.source_max_workers))
+                    console.print(
+                        f"[dim]  ⚡ Paralel sayım — target {rcc.parallel_workers} worker, "
+                        f"source {src_w} worker (havuz=worker)[/]"
+                    )
                 summary = run_counts(
                     src_conn, tgt_conn, mapping, cfg,
                     skip_tables=skip_list,
@@ -395,10 +411,17 @@ def _print_overall_summary(summaries: list[ModuleSummary]):
     t.add_row("[red]❌ FAIL[/]",         str(total[Status.FAIL]))
     t.add_row("[yellow]⚠️  WARNING[/]",  str(total[Status.WARNING]))
     t.add_row("[dim]⏭️  SKIPPED[/]",    str(total[Status.SKIPPED]))
+    # ERROR/TIMEOUT yalnızca varsa gösterilir — sıfırken özet bugünküyle birebir aynı kalır.
+    if total[Status.ERROR]:
+        t.add_row("[bold red]💥 ERROR[/]",   str(total[Status.ERROR]))
+    if total[Status.TIMEOUT]:
+        t.add_row("[magenta]⏱️  TIMEOUT[/]", str(total[Status.TIMEOUT]))
 
-    overall_ok = total[Status.FAIL] == 0
+    # FAIL ve ERROR "sorun" sayılır (doğrulanamayan obje sessizce TEMIZ raporlanmamalı).
+    problems = total[Status.FAIL] + total[Status.ERROR]
+    overall_ok = problems == 0
     title_style = "bold green" if overall_ok else "bold red"
-    overall_label = "✅ TEMIZ" if overall_ok else f"❌ {total[Status.FAIL]} SORUN"
+    overall_label = "✅ TEMIZ" if overall_ok else f"❌ {problems} SORUN"
 
     console.print(Panel(t, title=f"[{title_style}]{overall_label}[/]", box=box.ROUNDED, padding=(0, 2)))
     console.print()

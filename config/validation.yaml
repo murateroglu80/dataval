@@ -31,7 +31,15 @@ row_count:
   mode: auto           # auto | exact | sample | stats | skip
   sample_pct: 1        # SAMPLE(x) için yüzde — auto modda da kullanılır
   timeout_sec: 30      # Bu süreyi aşan sorgular TIMEOUT olarak işaretlenir
-  parallel_degree: 0   # 0 = hint yok, >0 = /*+ PARALLEL(t, N) */ eklenir
+  parallel_degree: 0   # TEK SORGU İÇİ Oracle hint: 0 = yok, >0 = /*+ PARALLEL(t, N) */
+  # parallel_workers: TABLOLAR ARASI eşzamanlılık (parallel_degree'den farklı!).
+  #   1 = seri (varsayılan). >1 → exact/sample sayımları ThreadPoolExecutor + bağlantı
+  #   havuzu ile paralel çalışır. Havuz boyutu = worker sayısı.
+  parallel_workers: 1
+  # source_max_workers: source (production 11g) havuzu için ayrı, daha düşük tavan.
+  #   Etkin source worker = min(parallel_workers, source_max_workers). Production'ı
+  #   eşzamanlı COUNT(*) yükünden korur; target tam parallel_workers hızında sayılır.
+  source_max_workers: 4
   refresh_stats: false # COUNT öncesi DBMS_STATS.GATHER_TABLE_STATS çalıştır
   stats_max_age_days: 7  # İstatistik bu kadar günden eskiyse WARNING ver
   # Tablo bazlı override — belirli tabloları atlamak veya mod değiştirmek için
