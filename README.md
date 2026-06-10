@@ -310,4 +310,20 @@ GRANT SELECT ON ALL_USERS        TO validator_user;
 GRANT SELECT ON ALL_TAB_PRIVS    TO validator_user;  -- GRANT script üretimi için
 GRANT EXECUTE ON DBMS_METADATA   TO validator_user;  -- DDL script üretimi için
 -- İstatistik toplamak için (opsiyonel):
-GRANT EXECUTE ON DBMS_STATS      TO valida
+GRANT EXECUTE ON DBMS_STATS      TO validator_user;
+```
+
+---
+
+## Roadmap
+
+- [ ] Paralel tablo sayımı (`ThreadPoolExecutor`)
+- [ ] PostgreSQL desteği
+- [ ] JSON çıktı modu (`--output json`)
+- [ ] CI/CD entegrasyonu için exit code yönetimi
+
+---
+
+## Lisans
+
+MIT
