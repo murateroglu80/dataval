@@ -98,7 +98,7 @@ def _get_object_status(conn, schema: str, obj_type: str, obj_name: str) -> str:
            AND OBJECT_NAME = :obj_name
     """
     row = fetch_one(conn, sql, {"schema": schema, "obj_type": obj_type, "obj_name": obj_name})
-    return row["STATUS"] if row else "UNKNOWN"
+    return row["status"] if row else "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +112,8 @@ def _get_ddl_raw(conn, meta_type: str, obj_name: str, schema: str) -> Optional[s
     """
     try:
         row = fetch_one(conn, sql, {"obj_type": meta_type, "obj_name": obj_name, "schema": schema})
-        if row and row.get("DDL"):
-            return str(row["DDL"])
+        if row and row.get("ddl"):
+            return str(row["ddl"])
     except Exception as e:
         err = str(e)
         # ORA-31603: obje bulunamadı — sessizce None dön
@@ -146,7 +146,7 @@ def _get_sequence_ddl(conn, obj_name: str, schema: str) -> Optional[str]:
     """, {"schema": schema, "name": obj_name})
 
     if seq_row:
-        last = seq_row.get("LAST_NUMBER") or 1
+        last = seq_row.get("last_number") or 1
         # START WITH değerini gerçek LAST_NUMBER ile değiştir
         ddl = re.sub(
             r"START\s+WITH\s+\d+",
@@ -182,11 +182,11 @@ def _get_grant_statements(conn, schema: str, target_schema: str,
     stmts = []
     eff_schema = target_schema if replace_schema else schema
     for r in rows:
-        with_grant = " WITH GRANT OPTION" if r.get("GRANTABLE") == "YES" else ""
-        hierarchy  = " WITH HIERARCHY OPTION" if r.get("HIERARCHY") == "YES" else ""
+        with_grant = " WITH GRANT OPTION" if r.get("grantable") == "YES" else ""
+        hierarchy  = " WITH HIERARCHY OPTION" if r.get("hierarchy") == "YES" else ""
         stmt = (
-            f"GRANT {r['PRIVILEGE']} ON {eff_schema}.{r['TABLE_NAME']} "
-            f"TO {r['GRANTEE']}{with_grant}{hierarchy};"
+            f"GRANT {r['privilege']} ON {eff_schema}.{r['table_name']} "
+            f"TO {r['grantee']}{with_grant}{hierarchy};"
         )
         stmts.append(stmt)
     return stmts
