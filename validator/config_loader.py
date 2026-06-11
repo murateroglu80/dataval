@@ -79,6 +79,10 @@ class ModulesConfig:
     constraints: bool = True
     sequences: bool = True
     grants: bool = False
+    # include_temp_tables: Global Temporary Table'ları (all_tables.temporary='Y')
+    # doğrulama kapsamına alır. Default False → GTT'ler hem tables hem constraints
+    # modülünde gürültü yaratmaması için atlanır.
+    include_temp_tables: bool = False
     code_objects_enabled: bool = True
     code_object_types: list = field(default_factory=lambda: [
         "FUNCTION", "PROCEDURE", "PACKAGE", "PACKAGE BODY",
@@ -121,19 +125,22 @@ class GenerateScriptsConfig:
 
 
 @dataclass
-class DebugConfig:
+class OutputConfig:
     """
-    Loglama / debug ayarları.
-    - Dosya logu HER ZAMAN üretilir (enabled'dan bağımsız); log_file boş ise
-      ./logs/dataval_<zaman>.log otomatik üretilir.
-    - log_level (INFO/WARNING/ERROR): HEM dosyanın HEM canlı ekranın eşiği.
-      INFO=her şey (PASS dahil), WARNING=warning+timeout+fail+error,
-      ERROR=yalnızca fail+error.
-    - enabled: True → ek olarak canlı stderr akışı açılır (--debug ile de açılabilir).
+    Çıktı / raporlama ayarları (eski `debug` bloğunun yerine).
+    - level (sync/not-sync/failed): HEM terminal tablosu HEM canlı ekran HEM dosya
+      logu için TEK eşik. sync=her şey, not-sync=NOT-SYNC+FAILED (default),
+      failed=yalnızca FAILED. SKIPPED daima sync seviyesindedir.
+    - extra_as (not-sync/sync): target'ta FAZLA (kaynakta yok) objelerin statüsü.
+      not-sync=göster (default), sync=gizle.
+    - log_file: boş → ./logs/dataval_<zaman>.log otomatik üretilir. Dosya logu
+      HER ZAMAN açıktır (level eşiğiyle süzülür).
+    - live: True → ek olarak canlı stderr akışı açılır (--debug ile de açılabilir).
     """
-    enabled: bool = False
+    level: str = "not-sync"
+    extra_as: str = "not-sync"
     log_file: Optional[str] = None
-    log_level: str = "INFO"
+    live: bool = False
 
 
 @dataclass
@@ -146,7 +153,7 @@ class AppConfig:
     ignore: IgnoreConfig
     generate_scripts: GenerateScriptsConfig = field(default_factory=GenerateScriptsConfig)
     oracle_client: OracleClientConfig = field(default_factory=OracleClientConfig)
-    debug: DebugConfig = field(default_factory=DebugConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +216,7 @@ def _parse_modules(raw: dict) -> ModulesConfig:
         constraints=raw.get("constraints", True),
         sequences=raw.get("sequences", True),
         grants=raw.get("grants", False),
+        include_temp_tables=bool(raw.get("include_temp_tables", False)),
         code_objects_enabled=co.get("enabled", True),
         code_object_types=co.get("types", [
             "FUNCTION", "PROCEDURE", "PACKAGE", "PACKAGE BODY",
@@ -272,15 +280,33 @@ def load_config(
         ignore=IgnoreConfig(**val_raw.get("ignore_differences", {})),
         generate_scripts=_parse_generate_scripts(val_raw.get("generate_scripts", {})),
         oracle_client=_parse_oracle_client(conn_raw.get("oracle_client", {}), source),
-        debug=_parse_debug(val_raw.get("debug", {})),
+        output=_parse_output(val_raw.get("output", {}), val_raw.get("debug", {})),
     )
 
 
-def _parse_debug(raw: dict) -> DebugConfig:
-    return DebugConfig(
-        enabled=bool(raw.get("enabled", False)),
-        log_file=raw.get("log_file") or None,
-        log_level=str(raw.get("log_level", "INFO")).upper(),
+def _parse_output(raw: dict, legacy_debug: dict) -> OutputConfig:
+    """
+    `output:` bloğunu okur. Yoksa GERİYE UYUMLULUK için eski `debug:` bloğundan türetir
+    (enabled→live, log_file taşınır; log_level — INFO/WARNING/ERROR — artık YOK SAYILIR).
+    Geçersiz level/extra_as değerleri sessizce default'a düşürülür.
+    """
+    valid_levels = {"sync", "not-sync", "failed"}
+    valid_extra = {"sync", "not-sync"}
+
+    src = raw if raw else {}
+    level = str(src.get("level", "not-sync")).lower()
+    extra_as = str(src.get("extra_as", "not-sync")).lower()
+    log_file = src.get("log_file")
+    # `output` yoksa eski debug bloğundan live/log_file devral.
+    live = bool(src.get("live", legacy_debug.get("enabled", False)))
+    if log_file is None:
+        log_file = legacy_debug.get("log_file")
+
+    return OutputConfig(
+        level=level if level in valid_levels else "not-sync",
+        extra_as=extra_as if extra_as in valid_extra else "not-sync",
+        log_file=log_file or None,
+        live=live,
     )
 
 

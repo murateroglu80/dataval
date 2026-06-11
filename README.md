@@ -14,7 +14,8 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Kod objeleri** — DDL hash karşılaştırması (whitespace normalize, schema adı soyutlanır)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur
-- **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar WARNING olarak işaretlenir, FAIL değil
+- **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
+- **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar ignore edilir, sorun sayılmaz
 - **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
 - **Thin / Thick mode** — `python-oracledb` thin mode (Oracle 12.1+, Instant Client gerekmez) veya thick mode (Oracle 11g için zorunlu). Tek satır config ile seçilir
 - **SYSDBA desteği** — `connections.yaml`'da `sysdba: true` ile DBA bağlantısı
@@ -75,7 +76,7 @@ target:
 
 > **Source read-only koruması:** Source production kabul edildiğinden `read_only`
 > varsayılanı **true**'dur. `--refresh-stats` verseniz bile source'a `DBMS_STATS`
-> gönderilmez (yalnızca target yenilenir, sonuca WARNING eklenir). Source'ta taze satır
+> gönderilmez (yalnızca target yenilenir, sonuca açıklama notu eklenir). Source'ta taze satır
 > sayısı için `--count-mode exact` (salt-okuma `COUNT(*)`) kullanın.
 
 > **Thin vs Thick:** Oracle 11.2 source thin mode'da `DPY-3010` verir; bu yüzden 11g→19c
@@ -116,9 +117,10 @@ schemas:
 modules:
   inventory: true
   tables: true
-  constraints: true   # PK/UK/FK/CHECK karşılaştırması — AYRI modül (aşağıya bkz)
+  constraints: true        # PK/UK/FK/CHECK karşılaştırması — AYRI modül (aşağıya bkz)
   indexes: true
   sequences: true
+  include_temp_tables: false  # Global Temporary Table'ları (temporary='Y') kapsa (default: hayır)
   code_objects:
     enabled: true
     types: [FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER]
@@ -137,6 +139,10 @@ row_count:
 > tek başına da çalıştırılabilir. (Önceden bu kontrol `tables` modülüne gömülüydü ve bu
 > bayrağı yok sayıyordu; artık düzeltildi.)
 
+> **Geçici tablolar.** Global Temporary Table'lar (`all_tables.temporary='Y'`) migration'da
+> çoğu zaman yapısal kopya değildir; default olarak `tables` ve `constraints` kapsamından
+> çıkarılır. Kontrol etmek istiyorsan `modules.include_temp_tables: true` yap.
+
 ### 3. DDL script üretimi ayarları
 
 ```yaml
@@ -145,7 +151,7 @@ generate_scripts:
   output_dir: ./ddl_output      # scriptlerin yazılacağı klasör
   only_missing: true            # sadece target'ta eksik olanlar
   replace_schema: true          # DDL içinde source schema adını target ile değiştir
-  include_invalid: false        # INVALID durumdaki objeleri de üret (WARNING eklenir)
+  include_invalid: false        # INVALID durumdaki objeleri de üret (script'e not eklenir)
 
   types:
     SEQUENCE:  true
@@ -352,7 +358,7 @@ GRANT ANALYZE ANY           TO valuser;
 - `connections.yaml`'da `username: valuser` olarak ayarlayın.
 - **Alternatif (daha kolay):** DBA yetkili bir kullanıcıyla ya da `connections.yaml`'da
   `sysdba: true` ile bağlanırsanız bu ANY yetkilerine gerek kalmaz.
-- Bir şema **0 obje** döndürürse araç artık sessizce TEMIZ demez; `SCHEMA ... ❌ FAIL —
+- Bir şema **0 obje** döndürürse araç artık sessizce TEMIZ demez; `SCHEMA ... ❌ FAILED —
   görünür obje yok (şema adı/yetki kontrol et)` uyarısı verir.
 
 ### Paralel sayım — oturum gereksinimleri
@@ -403,53 +409,65 @@ gerekiyorsa DBA bunu araç dışında yapmalıdır.
 
 ---
 
-## Loglama ve Debug Mode
+## Statüler, Çıktı Eşiği ve Loglama
 
-İki ayrı katman vardır:
+### Statüler (migration jargonu)
 
-**1. Dosya logu — HER ZAMAN açık.** Her çalıştırmada zaman damgalı bir log dosyası
-üretilir; kontrol edilen sonuçlar `ModuleSummary.add()` gözlemcisiyle kaynakta yakalanıp
-dosyaya yazılır. Ekstra bir bayrak gerekmez.
+| Statü | Anlamı |
+|-------|--------|
+| `SYNC` ✅     | Obje/veri iki tarafta da birebir aynı (eşit) |
+| `NOT-SYNC` ⚠️ | Obje iki tarafta da var ama yapısı/özellikleri farklı |
+| `FAILED` ❌   | Obje source'ta var, target'ta eksik **veya** doğrulanamadı (timeout/hata) |
+| `SKIPPED` ⏭️  | Kontrol atlandı (config gereği) |
+
+`NOT-SYNC` sonuçları **granüler** basılır — farkın hangi öznitelikten geldiği tek tek görünür:
 
 ```
-🗒️  Log: /.../logs/dataval_20260610_184500.log  (seviye: INFO)
+[NOT-SYNC]  COLUMN  HR.MUSTERI.BAKIYE
+      tip       Source: NUMBER     Target: VARCHAR2
+      nullable  Source: N          Target: Y
+[FAILED]    TABLE   HR.SIPARIS_KALEM  — Target'ta tablo mevcut değil
 ```
 
-**2. Canlı debug akışı — opt-in.** Doğrulama çalışırken kontrol edilen her objeyi **canlı**
-(stderr) görmek istersen aç. Her obje için şema-nitelikli ad, source/target değeri ve durum
-satır satır akar.
+### Tek eşik: `level`
+
+Terminal tablosu, canlı ekran ve dosya logu **aynı** eşikle (`level`) süzülür. Böylece
+yüzlerce `SYNC` satırı ekranı boğmaz; yalnızca eylem gerektiren sonuçlar görünür.
+
+| `level` | Gösterilen / loglanan |
+|---------|------------------------|
+| `sync`     | her şey (SYNC + SKIPPED dahil) |
+| `not-sync` | **NOT-SYNC + FAILED** (default) |
+| `failed`   | yalnızca FAILED |
 
 `config/validation.yaml`:
 
 ```yaml
-debug:
-  enabled: true       # canlı stderr akışını aç (dosya logu zaten her zaman açık)
+output:
+  level: not-sync     # sync | not-sync | failed
+  extra_as: not-sync  # target'ta FAZLA objeler: not-sync (göster) | sync (gizle)
   log_file: ""        # boş = ./logs/dataval_<zaman>.log otomatik
-  log_level: INFO     # HEM dosya HEM ekran eşiği — yalnızca sorunlar için: ERROR
+  live: false         # canlı stderr akışını aç (dosya logu zaten her zaman açık)
 ```
 
 veya CLI ile (YAML'ı override eder):
 
 ```bash
-python run.py --log-level ERROR            # dosya + ekran: yalnızca FAIL/ERROR
-python run.py --debug                      # canlı akış, INFO (her şey)
-python run.py --debug --log-level WARNING  # WARNING/FAIL/ERROR/TIMEOUT
+python run.py --level failed     # ekran + log: yalnızca FAILED (target'ta eksikler)
+python run.py --level sync        # her şey (tüm SYNC dahil)
+python run.py --debug             # canlı stderr akışı (aynı eşikle)
 ```
 
-**`log_level`** tek bir eşiktir ve **hem dosyayı hem canlı ekranı** birlikte kısar:
+> Dosya logu **HER ZAMAN** açıktır; zaman damgalı `./logs/dataval_<zaman>.log` üretilir ve
+> seçilen `level` eşiğiyle süzülür (`🗒️  Log: …  (eşik: not-sync)`). Sadece sorunları görmek
+> için `level: failed`, her şeyi görmek için `level: sync` kullan.
 
-| Seviye | Dosyaya + ekrana yazılan |
-|--------|--------------------------|
-| `INFO`    | her şey (PASS/SKIPPED dahil) |
-| `WARNING` | WARNING + TIMEOUT + FAIL + ERROR |
-| `ERROR`   | yalnızca FAIL + ERROR |
-
-> Yalnızca başarısız (FAIL/ERROR) satırları görmek istiyorsan `log_level: ERROR` ayarla —
-> dosya da bu eşikle süzülür, PASS satırları yazılmaz.
+> **Hedefte fazla objeler** (kaynakta yok, hedefte var) `extra_as` ile yönetilir: `not-sync`
+> (default, göster) veya `sync` (gizle — migration'da hedef fazlalığı çoğu zaman zararsızdır).
 
 **Çıktı:**
-- **Ekran (stderr):** `· [constraints] HR.ORDERS  src=ID  tgt=-  ❌ FAIL`
-- **Log dosyası:** `2026-06-10 18:45:00  ERROR    [constraints] HR.ORDERS source=ID target=- FAIL — PK constraint target'ta eksik`
+- **Ekran (stderr, --debug):** `· [constraints] HR.ORDERS  ❌ FAILED  PK constraint target'ta eksik`
+- **Log dosyası:** `2026-06-11 18:45:00  [constraints] HR.ORDERS source=ID target=(yok) FAILED — PK constraint target'ta eksik`
 
 Canlı akış ayrı bir akışta (stderr) olduğundan asıl rapor (stdout) bozulmaz; istersen
 ayırabilirsin:
@@ -478,11 +496,14 @@ Hızlı referans:
 | `ORA-00932 expected CHAR got LONG` | data dictionary LONG kolonu | migration §2 (giderildi) |
 | `DPI-1047 / cannot locate Oracle Client` | Instant Client yok/PATH dışı | troubleshooting → thick |
 | `PermissionError: Read-only baglantida...` | source koruması (beklenen) | troubleshooting → read-only |
-| `TIMEOUT` statüsü | büyük tabloda exact sayım | `--skip-tables` / `--count-mode sample` |
+| `FAILED` (timeout notlu) | büyük tabloda exact sayım | `--skip-tables` / `--count-mode sample` |
 
 ## Roadmap
 
-- [ ] Paralel tablo sayımı (ThreadPoolExecutor)
+- [ ] **Auto-Sync / Remediation modülü (v0.7.0)** — `NOT-SYNC` ve `FAILED` tespit edilen
+  objeler için target'ta düzeltici DDL üretip (opsiyonel) çalıştırma: `FAILED`→`CREATE`
+  (mevcut DDL üretimi), `NOT-SYNC`→hedefe yönelik `ALTER` (granüler `diffs`'ten). Reporter'ın
+  topladığı sonuçları girdi alır; dry-run default, yalnızca target'a yazar (source read-only).
 - [ ] PostgreSQL desteği
 - [ ] JSON çıktı modu (--output json)
 - [ ] CI/CD entegrasyonu için exit code yönetimi

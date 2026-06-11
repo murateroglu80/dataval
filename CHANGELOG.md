@@ -5,6 +5,35 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.6.0] - 2026-06-11
+
+> **Kırıcı (breaking):** Statü adları ve çıktı eşiği değişti; `INFO/WARNING/ERROR` log
+> seviyeleri kaldırıldı. `debug:` config bloğu yerini `output:` bloğuna bıraktı.
+
+### Değişenler
+- **Migration statü jargonu.** `Status` enum'u üç-değerli migration modeline taşındı:
+  `SYNC` (eşit), `NOT-SYNC` (iki tarafta var ama farklı), `FAILED` (target'ta eksik veya
+  doğrulanamadı) + operasyonel `SKIPPED`. Eski `PASS→SYNC`; eski `FAIL` ikiye ayrıldı
+  (eksik→`FAILED`, farklı→`NOT-SYNC`); eski `WARNING` (kolon/constraint farkı)→`NOT-SYNC`;
+  `TIMEOUT`/`ERROR`→`FAILED` (ayrıntı not'ta). Tüm modüller yeni jargona geçirildi.
+- **`INFO/WARNING/ERROR` seviye katmanı kaldırıldı → `sync|not-sync|failed` eşiği.** Tek
+  `level` eşiği artık **hem terminal tablosunu, hem canlı ekranı, hem dosya logunu** birlikte
+  süzer (sıra: `sync` < `not-sync` < `failed`; default `not-sync`). CLI: `--log-level` yerine
+  `--level`. Config: `debug.log_level` yerine `output.level`. Böylece yüzlerce `SYNC` satırı
+  ekranı/logu boğmaz; yalnızca eylem gerektiren `NOT-SYNC`/`FAILED` görünür.
+- **Merkezi Reporter (`validator/reporter.py`).** Terminal tabloları (run.py), dosya logu ve
+  canlı ekran (debug.py) tek bir `Reporter` sınıfında toplandı; `register_observer` ile sonuç
+  choke-point'ine bağlanır. `validator/debug.py` ince bir `dbg` köprüsüne indirildi.
+- **Granüler `NOT-SYNC` çıktısı.** Farklar artık `ValidationResult.diffs` (öznitelik, source,
+  target) üçlüleriyle taşınır ve hiyerarşik basılır: `tip  Source: NUMBER  Target: VARCHAR2`
+  (tables/indexes/sequences).
+
+### Eklenenler
+- **`output.extra_as`** (`not-sync`/`sync`, default `not-sync`): target'ta FAZLA (kaynakta
+  yok) objelerin statüsünü belirler — göster ya da gizle.
+- **`modules.include_temp_tables`** (default `false`): Global Temporary Table'ları
+  (`temporary='Y'`) kapsama dahil eder. Default'ta `tables` ve `constraints` GTT'leri atlar.
+
 ## [0.5.0] - 2026-06-10
 
 ### Düzeltilenler
@@ -101,6 +130,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.6.0]: https://github.com/murateroglu80/dataval/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/murateroglu80/dataval/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/murateroglu80/dataval/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/murateroglu80/dataval/compare/v0.3.1...v0.3.2

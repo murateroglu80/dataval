@@ -7,18 +7,19 @@ Kullanım: python run.py [OPTIONS]
 import sys
 import click
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
 from rich import box
 
 from validator.config_loader import load_config, SchemaMapping
 from validator.connection import test_connection, get_connection, fetch_one
 from validator.result import (
-    Status, STATUS_STYLE, STATUS_ICON, ModuleSummary, ValidationResult, register_observer
+    Status, ModuleSummary, ValidationResult, register_observer
 )
 from validator import debug
+from validator.reporter import Reporter
 
 console = Console()
+reporter: Reporter | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -62,15 +63,15 @@ console = Console()
 @click.option("--no-color", is_flag=True, default=False,
               help="Renkli çıktıyı kapat")
 @click.option("--debug", "-d", "debug_flag", is_flag=True, default=False,
-              help="Canlı debug akışı — kontrol edilen her objeyi anlık olarak ekrana (stderr) yaz")
-@click.option("--log-level", default=None,
-              type=click.Choice(["INFO", "WARNING", "ERROR"]),
-              help="Canlı debug ekran ayrıntı düzeyi (dosya logu daima eksiksizdir)")
+              help="Canlı akış — kontrol edilen her objeyi anlık olarak ekrana (stderr) yaz")
+@click.option("--level", default=None,
+              type=click.Choice(["sync", "not-sync", "failed"]),
+              help="Çıktı eşiği (config'i override eder): sync=her şey, not-sync=NOT-SYNC+FAILED, failed=yalnızca FAILED")
 def main(source_schema, target_schema, modules, count_mode, sample_pct,
          refresh_stats, parallel_degree, parallel_workers, source_workers,
          query_timeout, skip_tables,
          only_tables, connections, validation_config,
-         generate_missing, output_dir, no_color, debug_flag, log_level):
+         generate_missing, output_dir, no_color, debug_flag, level):
     """
     Oracle 11g → 19c migration validation aracı.
 
@@ -164,18 +165,21 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             active_modules.add("row_counts")
 
     # ------------------------------------------------------------------
-    # Loglama — dosya logu HER ZAMAN açıktır (debug bayrağı gerekmez).
-    # log_level (INFO/WARNING/ERROR) hem dosyanın hem de canlı ekranın eşiğidir:
-    #   INFO=her şey (PASS dahil) · WARNING=warning+timeout+fail+error · ERROR=yalnızca fail/error
-    # --debug/debug.enabled ek olarak canlı stderr akışını açar (aynı eşikle).
+    # Raporlama — merkezi Reporter. Dosya logu HER ZAMAN açıktır; tek eşik (level)
+    # hem terminal tablolarını, hem canlı ekranı, hem dosya logunu süzer:
+    #   sync=her şey · not-sync=NOT-SYNC+FAILED (default) · failed=yalnızca FAILED
+    # --debug/output.live ek olarak canlı stderr akışını açar (aynı eşikle).
     # ------------------------------------------------------------------
-    level = (log_level or cfg.debug.log_level or "INFO").upper()
-    log_file_path = debug.setup_file_log(cfg.debug.log_file, level=level)
-    register_observer(debug.on_result)
-    console.print(f"[dim]  🗒️  Log: {log_file_path}  (seviye: {level})[/]")
-    if debug_flag or cfg.debug.enabled:
-        debug.enable_live(no_color=no_color, screen_level=level)
-        console.print(f"[dim]  🐞 Canlı debug akışı aktif (seviye: {level})[/]")
+    global reporter
+    out = cfg.output
+    eff_level = (level or out.level or "not-sync").lower()
+    live = bool(debug_flag or out.live)
+    reporter = Reporter(level=eff_level, log_file=out.log_file, live=live, no_color=no_color)
+    register_observer(reporter.on_result)
+    debug.set_reporter(reporter)
+    console.print(f"[dim]  🗒️  Log: {reporter.log_path}  (eşik: {eff_level})[/]")
+    if live:
+        console.print(f"[dim]  🐞 Canlı akış aktif (eşik: {eff_level})[/]")
 
     # ------------------------------------------------------------------
     # Başlık
@@ -235,50 +239,50 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
                 pre.add(ValidationResult(
                     module="preflight", schema=mapping.source,
                     object_type="SCHEMA", object_name=mapping.source,
-                    status=Status.FAIL,
+                    status=Status.FAILED,
                     source_value="0 obje",
                     target_value="",
                     note=("Source şemada görünür obje yok — şema adını ve yetkileri "
                           "(SELECT ANY TABLE vb.) kontrol edin"),
                 ))
-                _print_module_results(pre)
+                reporter.render_module(pre)
                 all_summaries.append(pre)
                 continue
 
             if "inventory" in active_modules:
                 from validator.modules.inventory import run as run_inventory
                 summary = run_inventory(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "tables" in active_modules:
                 from validator.modules.tables import run as run_tables
                 summary = run_tables(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "constraints" in active_modules:
                 from validator.modules.constraints import run as run_constraints
                 summary = run_constraints(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "indexes" in active_modules:
                 from validator.modules.indexes import run as run_indexes
                 summary = run_indexes(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "sequences" in active_modules:
                 from validator.modules.sequences import run as run_sequences
                 summary = run_sequences(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "code" in active_modules:
                 from validator.modules.code_objects import run as run_code
                 summary = run_code(src_conn, tgt_conn, mapping, cfg)
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             if "row_counts" in active_modules:
@@ -295,7 +299,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
                     skip_tables=skip_list,
                     only_tables=only_list,
                 )
-                _print_module_results(summary)
+                reporter.render_module(summary)
                 all_summaries.append(summary)
 
             # ----------------------------------------------------------
@@ -309,7 +313,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
     # ------------------------------------------------------------------
     # Genel özet
     # ------------------------------------------------------------------
-    _print_overall_summary(all_summaries)
+    reporter.render_overall(all_summaries)
 
 
 # ---------------------------------------------------------------------------
@@ -323,12 +327,12 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
 
     gs_cfg = cfg.generate_scripts
 
-    # FAIL sonuçlarından eksik objeleri topla
-    # "eksik" = source'da var, target'ta yok → source_value dolu, target_value boş
+    # FAILED sonuçlarından eksik objeleri topla
+    # "eksik" = source'da var, target'ta yok → target_value boş
     missing: dict[str, list[str]] = {}
     for sm in summaries:
         for r in sm.results:
-            if r.status == Status.FAIL and r.target_value in (None, "", "—", "-"):
+            if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
                 obj_type = (r.object_type or "").upper()
                 if obj_type not in missing:
                     missing[obj_type] = []
@@ -366,79 +370,6 @@ def _print_conn_status(label: str, dsn: str, ok: bool, info: str):
     icon  = "✅" if ok else "❌"
     style = "green" if ok else "red"
     console.print(f"  {icon} [{style}]{label}[/]  {dsn}  —  {info}")
-
-
-def _print_module_results(summary: ModuleSummary):
-    if not summary.results:
-        return
-
-    t = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold cyan",
-              expand=False, padding=(0, 1))
-    t.add_column("Obje Tipi",  style="dim", width=18)
-    t.add_column("Obje Adı",   width=35)
-    t.add_column("Durum",      width=10)
-    t.add_column("Source",     width=25)
-    t.add_column("Target",     width=25)
-    t.add_column("Not",        style="dim")
-
-    for r in summary.results:
-        style = STATUS_STYLE[r.status]
-        icon  = STATUS_ICON[r.status]
-        t.add_row(
-            r.object_type,
-            r.object_name,
-            f"[{style}]{icon} {r.status.value}[/]",
-            r.source_value or "",
-            r.target_value or "",
-            r.note or "",
-        )
-
-    counts = summary.counts
-    title = (
-        f"[bold]{summary.module.upper()}[/]  "
-        f"[green]✅ {counts[Status.PASS]}[/]  "
-        f"[red]❌ {counts[Status.FAIL]}[/]  "
-        f"[yellow]⚠️  {counts[Status.WARNING]}[/]  "
-        f"[dim]⏭️  {counts[Status.SKIPPED]}[/]"
-    )
-    console.print(Panel(t, title=title, box=box.ROUNDED, padding=(0, 1)))
-    console.print()
-
-
-def _print_overall_summary(summaries: list[ModuleSummary]):
-    if not summaries:
-        return
-
-    console.rule("[bold]GENEL ÖZET[/]")
-    console.print()
-
-    total = {s: 0 for s in Status}
-    for sm in summaries:
-        for s, n in sm.counts.items():
-            total[s] += n
-
-    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-    t.add_column("Durum",  width=12)
-    t.add_column("Sayı",   width=8, justify="right")
-
-    t.add_row("[green]✅ PASS[/]",       str(total[Status.PASS]))
-    t.add_row("[red]❌ FAIL[/]",         str(total[Status.FAIL]))
-    t.add_row("[yellow]⚠️  WARNING[/]",  str(total[Status.WARNING]))
-    t.add_row("[dim]⏭️  SKIPPED[/]",    str(total[Status.SKIPPED]))
-    # ERROR/TIMEOUT yalnızca varsa gösterilir — sıfırken özet bugünküyle birebir aynı kalır.
-    if total[Status.ERROR]:
-        t.add_row("[bold red]💥 ERROR[/]",   str(total[Status.ERROR]))
-    if total[Status.TIMEOUT]:
-        t.add_row("[magenta]⏱️  TIMEOUT[/]", str(total[Status.TIMEOUT]))
-
-    # FAIL ve ERROR "sorun" sayılır (doğrulanamayan obje sessizce TEMIZ raporlanmamalı).
-    problems = total[Status.FAIL] + total[Status.ERROR]
-    overall_ok = problems == 0
-    title_style = "bold green" if overall_ok else "bold red"
-    overall_label = "✅ TEMIZ" if overall_ok else f"❌ {problems} SORUN"
-
-    console.print(Panel(t, title=f"[{title_style}]{overall_label}[/]", box=box.ROUNDED, padding=(0, 2)))
-    console.print()
 
 
 if __name__ == "__main__":

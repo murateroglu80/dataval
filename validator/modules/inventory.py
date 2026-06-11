@@ -4,7 +4,7 @@ Inventory modülü — her obje tipinde source vs target sayı karşılaştırma
 
 import oracledb
 from validator.connection import fetch_all
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 
 # ALL_OBJECTS'te görünen, migration kapsamında olan obje tipleri
@@ -52,6 +52,7 @@ def run(
 ) -> ModuleSummary:
 
     summary = ModuleSummary(module="inventory")
+    extra = extra_status(cfg.output.extra_as)
 
     src_counts = _get_counts(src_conn, mapping.source)
     tgt_counts = _get_counts(tgt_conn, mapping.target)
@@ -63,13 +64,13 @@ def run(
         tgt_n = tgt_counts.get(obj_type, 0)
 
         if src_n == tgt_n:
-            status = Status.PASS
+            status = Status.SYNC
             note   = None
         elif src_n > tgt_n:
-            status = Status.FAIL
+            status = Status.FAILED
             note   = f"Target'ta {src_n - tgt_n} adet eksik"
         else:
-            status = Status.WARNING
+            status = extra
             note   = f"Target'ta {tgt_n - src_n} adet fazla"
 
         summary.add(ValidationResult(

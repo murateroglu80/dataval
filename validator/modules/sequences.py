@@ -5,7 +5,7 @@ LAST_NUMBER için config'den gelen tolerans yüzdesi uygulanır.
 
 import oracledb
 from validator.connection import fetch_all
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 
 SQL_SEQUENCES = """
@@ -32,6 +32,7 @@ def run(
 ) -> ModuleSummary:
 
     summary = ModuleSummary(module="sequences")
+    extra = extra_status(cfg.output.extra_as)
 
     src_seqs = {r["sequence_name"]: r
                 for r in fetch_all(src_conn, SQL_SEQUENCES, {"schema": mapping.source})}
@@ -43,7 +44,8 @@ def run(
         summary.add(ValidationResult(
             module="sequences", schema=mapping.source,
             object_type="SEQUENCE", object_name=name,
-            status=Status.FAIL,
+            status=Status.FAILED,
+            target_value="(yok)",
             note="Target'ta sequence mevcut değil",
         ))
 
@@ -51,7 +53,8 @@ def run(
         summary.add(ValidationResult(
             module="sequences", schema=mapping.source,
             object_type="SEQUENCE", object_name=name,
-            status=Status.WARNING,
+            status=extra,
+            source_value="(yok)",
             note="Target'ta fazladan sequence var",
         ))
 
@@ -72,7 +75,7 @@ def run(
             sv = str(sr[field]) if sr[field] is not None else "NULL"
             tv = str(tr[field]) if tr[field] is not None else "NULL"
             if sv != tv:
-                diffs.append(f"{field}: {sv}→{tv}")
+                diffs.append((field, sv, tv))
 
         # LAST_NUMBER — tolerans ile kontrol
         last_note = None
@@ -81,7 +84,7 @@ def run(
         if src_last != tgt_last:
             diff_pct = abs(src_last - tgt_last) / max(abs(src_last), 1) * 100
             if diff_pct > last_num_tol:
-                diffs.append(f"last_number: {src_last}→{tgt_last} ({diff_pct:.1f}% fark)")
+                diffs.append(("last_number", str(src_last), f"{tgt_last} ({diff_pct:.1f}% fark)"))
             else:
                 last_note = f"last_number farkı {diff_pct:.1f}% (tolerans içinde)"
 
@@ -89,16 +92,16 @@ def run(
             summary.add(ValidationResult(
                 module="sequences", schema=mapping.source,
                 object_type="SEQUENCE", object_name=name,
-                status=Status.FAIL,
+                status=Status.NOT_SYNC,
                 source_value=f"inc={sr['increment_by']},cache={sr['cache_size']}",
                 target_value=f"inc={tr['increment_by']},cache={tr['cache_size']}",
-                note="; ".join(diffs),
+                diffs=diffs,
             ))
         else:
             summary.add(ValidationResult(
                 module="sequences", schema=mapping.source,
                 object_type="SEQUENCE", object_name=name,
-                status=Status.PASS,
+                status=Status.SYNC,
                 source_value=f"inc={sr['increment_by']},cache={sr['cache_size']}",
                 target_value=f"inc={tr['increment_by']},cache={tr['cache_size']}",
                 note=last_note,

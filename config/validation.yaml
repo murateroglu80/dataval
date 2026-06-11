@@ -13,6 +13,9 @@ modules:
   constraints: true
   sequences: true
   grants: false
+  # Global Temporary Table'ları (all_tables.temporary='Y') kapsa.
+  # Default false → GTT'ler tables ve constraints'te atlanır (migration gürültüsü).
+  include_temp_tables: false
 
   code_objects:
     enabled: false
@@ -82,20 +85,21 @@ ignore_differences:
   index_compression: true  # Index compression farklarını ignore et
 
 # ---------------------------------------------------------------------------
-# Loglama / debug
-#   Dosya logu HER ZAMAN üretilir (debug bayrağı gerekmez).
-#
-#   log_level: INFO | WARNING | ERROR — HEM dosyanın HEM canlı ekranın eşiği:
-#              INFO    = her şey (PASS dahil)
-#              WARNING = warning + timeout + fail + error
-#              ERROR   = yalnızca fail + error   ← sadece sorunları görmek için
-#              (CLI'dan --log-level ile override edilebilir.)
-#   enabled: true → EK OLARAK canlı stderr akışı açılır; her obje için
-#                   "ŞEMA.OBJE  source=..  target=..  STATUS" satırı anlık basılır
-#                   (aynı log_level eşiğiyle). CLI'dan --debug ile de açılabilir.
+# Çıktı / raporlama
+#   Dosya logu HER ZAMAN üretilir. Tek eşik (level) HEM terminal tablosunu HEM
+#   canlı ekranı HEM dosya logunu süzer:
+#     level: sync     = her şey (SYNC + SKIPPED dahil)
+#            not-sync = NOT-SYNC + FAILED   ← sadece eylem gerektirenler (default)
+#            failed   = yalnızca FAILED (target'ta eksik/doğrulanamayan)
+#            (CLI'dan --level ile override edilebilir.)
+#   extra_as: target'ta FAZLA (kaynakta yok) objelerin statüsü:
+#             not-sync = göster (default) | sync = gizle
+#   live: true → EK OLARAK canlı stderr akışı; her obje anlık renkli basılır
+#                (aynı eşikle). CLI'dan --debug ile de açılır.
 #   log_file: boş → ./logs/dataval_<zaman>.log otomatik üretilir.
 # ---------------------------------------------------------------------------
-debug:
-  enabled: false
+output:
+  level: not-sync       # sync | not-sync | failed
+  extra_as: not-sync    # not-sync | sync
   log_file: ""
-  log_level: INFO    # yalnızca sorunları loglamak için: ERROR
+  live: false
