@@ -119,43 +119,120 @@ def _get_ddl_raw(conn, meta_type: str, obj_name: str, schema: str) -> Optional[s
         # ORA-31603: obje bulunamadı — sessizce None dön
         if "ORA-31603" in err or "ORA-04043" in err:
             return None
+        # Ölümcül kopma (11g DBMS_METADATA-in-SQL hatası vb.): ham traceback yerine
+        # None dön ki tek bir obje tüm CLI'yi çökertmesin. SEQUENCE artık bu yolu
+        # KULLANMAZ (native üretilir); bu koruma diğer tipler içindir.
+        if any(code in err for code in ("ORA-03113", "ORA-03114", "DPY-4011", "DPI-1080")):
+            return None
         raise
     return None
 
 
 # ---------------------------------------------------------------------------
-# Sequence — LAST_NUMBER koruması
+# Sequence — native DDL (DBMS_METADATA KULLANILMAZ)
+#
+# Oracle 11g'de DBMS_METADATA.GET_DDL'in SELECT ... FROM DUAL içinde bind
+# değişkenleriyle çağrılması oturumu çökertiyor (ORA-03113). Sequence için tüm
+# parametreler ALL_SEQUENCES'tan zaten okunabildiğinden, CREATE/ALTER DDL'i
+# elle (native) kuruyoruz → ORA-03113 tamamen by-pass edilir, üstelik MIN/MAX/
+# INCREMENT/CACHE/CYCLE/ORDER ve gerçek LAST_NUMBER birebir korunur.
 # ---------------------------------------------------------------------------
+
+# Oracle ASC sequence default MAXVALUE = 28 dokuz (10^28 - 1) → NOMAXVALUE yaz.
+_SEQ_MAX_DEFAULT = 10 ** 28 - 1
+
+SQL_SEQ_PARAMS = """
+    SELECT LAST_NUMBER, INCREMENT_BY, CACHE_SIZE, CYCLE_FLAG,
+           ORDER_FLAG, MIN_VALUE, MAX_VALUE
+      FROM ALL_SEQUENCES
+     WHERE SEQUENCE_OWNER = :schema
+       AND SEQUENCE_NAME  = :name
+"""
+
+
+def _fetch_seq_row(conn, schema: str, name: str) -> Optional[dict]:
+    """ALL_SEQUENCES'tan bir sequence'in parametre satırını döner (yoksa None)."""
+    return fetch_one(conn, SQL_SEQ_PARAMS, {"schema": schema, "name": name})
+
+
+def _seq_int(v):
+    """NUMBER (int/Decimal/float) değeri tam sayı string'ine indirger; olmazsa olduğu gibi."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return v
+
+
+def _seq_clauses(seq_row: dict) -> list[str]:
+    """ALTER/CREATE için ortak öznitelik cümlecikleri (START WITH hariç)."""
+    inc   = _seq_int(seq_row.get("increment_by") or 1)
+    minv  = seq_row.get("min_value")
+    maxv  = seq_row.get("max_value")
+    cache = seq_row.get("cache_size")
+    cycle = (seq_row.get("cycle_flag") or "N").upper() == "Y"
+    order = (seq_row.get("order_flag") or "N").upper() == "Y"
+
+    clauses = [f"INCREMENT BY {inc}"]
+    if maxv is not None and _seq_int(maxv) >= _SEQ_MAX_DEFAULT:
+        clauses.append("NOMAXVALUE")
+    elif maxv is not None:
+        clauses.append(f"MAXVALUE {_seq_int(maxv)}")
+    if minv is not None:
+        clauses.append(f"MINVALUE {_seq_int(minv)}")
+    clauses.append("NOCACHE" if (not cache or _seq_int(cache) == 0) else f"CACHE {_seq_int(cache)}")
+    clauses.append("CYCLE" if cycle else "NOCYCLE")
+    clauses.append("ORDER" if order else "NOORDER")
+    return clauses
+
+
+def _build_create_sequence(seq_row: dict, schema: str, name: str) -> str:
+    """ALL_SEQUENCES satırından `CREATE SEQUENCE` DDL'i kurar (terminator yok)."""
+    start = _seq_int(seq_row.get("last_number") or 1)
+    clauses = _seq_clauses(seq_row)
+    # START WITH'i en başa (INCREMENT BY'dan sonra) yerleştir — okunurluk için.
+    lines = [f"CREATE SEQUENCE {schema}.{name}"]
+    lines.append(f"  {clauses[0]}")            # INCREMENT BY
+    lines.append(f"  START WITH {start}")
+    for c in clauses[1:]:
+        lines.append(f"  {c}")
+    return "\n".join(lines)
+
+
+def _build_alter_sequence(seq_row: dict, schema: str, name: str) -> str:
+    """
+    NOT-SYNC bir sequence'i source değerlerine hizalayan ALTER bloğu üretir.
+    Non-destructive (grant/bağımlılık korunur). Geçerli değer target 18c+'de
+    `RESTART START WITH` ile sıfırlanır. DROP+CREATE eşdeğeri yorum satırı olarak
+    eklenir (pre-18c target ya da ALTER başarısızsa yedek).
+    """
+    start   = _seq_int(seq_row.get("last_number") or 1)
+    clauses = _seq_clauses(seq_row)
+
+    lines = [
+        "-- Yapisal hizalama (INCREMENT/MIN/MAX/CACHE/CYCLE/ORDER):",
+        f"ALTER SEQUENCE {schema}.{name}",
+        "  " + "\n  ".join(clauses) + ";",
+        "",
+        "-- Gecerli degeri source ile hizala (target 18c+ gerekir):",
+        f"ALTER SEQUENCE {schema}.{name} RESTART START WITH {start};",
+        "",
+        "-- Alternatif (pre-18c target ya da yukaridaki ALTER basarisizsa) -- DROP + CREATE.",
+        "-- DIKKAT: DROP SEQUENCE grant'lari siler ve bagimli objeleri INVALID yapar!",
+    ]
+    drop_create = f"DROP SEQUENCE {schema}.{name};\n{_build_create_sequence(seq_row, schema, name)};"
+    lines += ["-- " + ln for ln in drop_create.splitlines()]
+    return "\n".join(lines)
+
+
 def _get_sequence_ddl(conn, obj_name: str, schema: str) -> Optional[str]:
     """
-    SEQUENCE DDL'ini LAST_NUMBER ile birlikte üretir.
-    DBMS_METADATA bazen START WITH 1 yazar; ALL_SEQUENCES'tan
-    gerçek değeri alıp DDL'i düzeltiyoruz.
+    SEQUENCE için `CREATE SEQUENCE` DDL'ini ALL_SEQUENCES'tan native kurar
+    (DBMS_METADATA yok → ORA-03113 yok). LAST_NUMBER `START WITH` olarak yazılır.
     """
-    ddl = _get_ddl_raw(conn, "SEQUENCE", obj_name, schema)
-    if not ddl:
+    seq_row = _fetch_seq_row(conn, schema, obj_name)
+    if not seq_row:
         return None
-
-    # Mevcut LAST_NUMBER + INCREMENT_BY'ı sorgula
-    seq_row = fetch_one(conn, """
-        SELECT LAST_NUMBER, INCREMENT_BY, CACHE_SIZE, CYCLE_FLAG,
-               ORDER_FLAG, MIN_VALUE, MAX_VALUE
-          FROM ALL_SEQUENCES
-         WHERE SEQUENCE_OWNER = :schema
-           AND SEQUENCE_NAME  = :name
-    """, {"schema": schema, "name": obj_name})
-
-    if seq_row:
-        last = seq_row.get("last_number") or 1
-        # START WITH değerini gerçek LAST_NUMBER ile değiştir
-        ddl = re.sub(
-            r"START\s+WITH\s+\d+",
-            f"START WITH {last}",
-            ddl,
-            flags=re.IGNORECASE,
-        )
-
-    return ddl
+    return _build_create_sequence(seq_row, schema, obj_name)
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +308,11 @@ def generate_scripts(
     target_schema: str,
     cfg,                                      # GenerateScriptsConfig
     console=None,                             # rich Console (opsiyonel)
+    not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
 ) -> list[str]:
     """
-    Eksik objelerin DDL scriptlerini output_dir altına yazar.
+    Eksik objelerin DDL scriptlerini output_dir altına yazar. Ayrıca NOT-SYNC
+    sequence'ler için (SEQUENCE tipi açıkken) hizalayıcı ALTER script'i üretir.
     Döndürür: oluşturulan dosyaların listesi.
     """
     output_dir = Path(cfg.output_dir)
@@ -331,11 +410,54 @@ def generate_scripts(
                 + ")"
             )
 
+    # NOT-SYNC sequence remediation (ALTER) — SEQUENCE tipi açıksa
+    if not_sync_sequences and (cfg.types.get("SEQUENCE", False)):
+        _write_sequence_alter_file(
+            source_conn, source_schema, target_schema, sorted(set(not_sync_sequences)),
+            cfg, output_dir, generated_at, created_files, console,
+        )
+
     # Uygulama sırası README'si
     if created_files:
         _write_apply_order(output_dir, target_schema, created_files, generated_at)
 
     return created_files
+
+
+# ---------------------------------------------------------------------------
+# NOT-SYNC sequence → ALTER dosyası
+# ---------------------------------------------------------------------------
+def _write_sequence_alter_file(source_conn, source_schema, target_schema, seq_names,
+                               cfg, output_dir, generated_at, created_files, console):
+    """NOT-SYNC sequence'ler için hizalayıcı ALTER script'i yazar (source değerleriyle)."""
+    eff_schema = target_schema if cfg.replace_schema else source_schema
+
+    blocks = []
+    written = 0
+    for name in seq_names:
+        seq_row = _fetch_seq_row(source_conn, source_schema, name)
+        if not seq_row:
+            blocks.append(f"-- !! Sequence parametreleri alinamadi: {name}\n")
+            continue
+        blocks.append(_object_header(name, "NOT-SYNC", "source ile hizalama (ALTER)"))
+        blocks.append(_build_alter_sequence(seq_row, eff_schema, name) + "\n")
+        written += 1
+
+    if written == 0:
+        return
+
+    filename = f"{target_schema}_SEQUENCE_ALTER.sql"
+    filepath = output_dir / filename
+    content = _file_header(target_schema, "SEQUENCE (ALTER / NOT-SYNC)", generated_at) + "\n".join(blocks) + "\n"
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    created_files.append(str(filepath))
+    if console:
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{written}[/cyan] NOT-SYNC sequence → ALTER)"
+        )
 
 
 # ---------------------------------------------------------------------------

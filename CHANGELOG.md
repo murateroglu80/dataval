@@ -5,6 +5,26 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.6.2] - 2026-06-11
+
+### Düzeltilenler
+- **DDL script üretimi Oracle 11g'de oturumu çökertiyordu (`ORA-03113`).** `DBMS_METADATA.GET_DDL`'in
+  `SELECT ... FROM DUAL` içinde bind değişkenleriyle çağrılması, 11g'de bilinen bir
+  `DBMS_METADATA`-in-SQL hatasıyla sunucu oturumunu öldürüyordu (`DPY-4011 / DPI-1080 / ORA-03113`).
+  **Sequence DDL artık `DBMS_METADATA` olmadan native (ALL_SEQUENCES'tan) üretiliyor** → ORA-03113
+  tamamen by-pass; üstelik MIN/MAX/INCREMENT/CACHE/CYCLE/ORDER ve gerçek `LAST_NUMBER` (`START WITH`)
+  birebir korunuyor.
+- **Diğer obje tipleri için zarif düşüş.** `_get_ddl_raw` artık ölümcül kopma hatalarını
+  (`ORA-03113/03114`, `DPY-4011`, `DPI-1080`) yakalayıp ilgili objeyi atlıyor (`-- !! DDL alınamadı`)
+  — tek bir obje tüm CLI'yi ham traceback ile çökertmiyor.
+
+### Eklenenler
+- **NOT-SYNC sequence remediation (ALTER).** `--generate-scripts` artık yalnızca eksik (FAILED)
+  objeleri değil, **NOT-SYNC sequence'leri** de ele alıyor: source değerlerine hizalayan
+  non-destructive `ALTER SEQUENCE` (+ target 18c+ için `RESTART START WITH <last_number>`) üretip
+  ayrı `<target>_SEQUENCE_ALTER.sql` dosyasına yazıyor. Yıkıcı `DROP + CREATE` eşdeğeri yalnızca
+  yorum satırında yedek olarak bulunuyor (kazara çalışma riski yok); grant ve bağımlılıklar korunur.
+
 ## [0.6.1] - 2026-06-11
 
 ### Düzeltilenler
@@ -142,6 +162,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.6.2]: https://github.com/murateroglu80/dataval/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/murateroglu80/dataval/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/murateroglu80/dataval/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/murateroglu80/dataval/compare/v0.4.0...v0.5.0

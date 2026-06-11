@@ -330,6 +330,8 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
     # FAILED sonuçlarından eksik objeleri topla
     # "eksik" = source'da var, target'ta yok → target_value boş
     missing: dict[str, list[str]] = {}
+    # NOT-SYNC sequence'ler → hizalayıcı ALTER üretilir (eksik değil, farklı)
+    not_sync_sequences: list[str] = []
     for sm in summaries:
         for r in sm.results:
             if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
@@ -338,13 +340,17 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
                     missing[obj_type] = []
                 if r.object_name not in missing[obj_type]:
                     missing[obj_type].append(r.object_name)
+            elif r.status == Status.NOT_SYNC and (r.object_type or "").upper() == "SEQUENCE":
+                if r.object_name not in not_sync_sequences:
+                    not_sync_sequences.append(r.object_name)
 
-    if not any(missing.values()):
-        console.print("[dim]  ℹ️  Generate scripts: eksik obje bulunamadı.[/]")
+    if not any(missing.values()) and not not_sync_sequences:
+        console.print("[dim]  ℹ️  Generate scripts: eksik/NOT-SYNC obje bulunamadı.[/]")
         return
 
     total_missing = sum(len(v) for v in missing.values())
-    console.rule(f"[bold cyan]DDL Script Üretimi[/] — {total_missing} eksik obje")
+    extra = f" + {len(not_sync_sequences)} NOT-SYNC sequence" if not_sync_sequences else ""
+    console.rule(f"[bold cyan]DDL Script Üretimi[/] — {total_missing} eksik obje{extra}")
     console.print(f"  Çıktı klasörü: [cyan]{gs_cfg.output_dir}[/]")
     console.print()
 
@@ -355,6 +361,7 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
         target_schema=mapping.target,
         cfg=gs_cfg,
         console=console,
+        not_sync_sequences=not_sync_sequences,
     )
 
     console.print()
