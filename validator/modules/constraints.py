@@ -10,8 +10,8 @@ kendi `ModuleSummary`'sini üretir, `run.py`'deki router tarafından yalnızca
 import re
 import oracledb
 from validator.connection import fetch_all
-from validator.modules.tables import SQL_TABLES
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.modules.tables import tables_sql
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 
 # ---------------------------------------------------------------------------
@@ -71,11 +71,14 @@ def run(
 
     # Ortak tablo kümesi: constraint'ler yalnızca iki tarafta da var olan tablolar
     # için karşılaştırılır. Eksik/fazla tablolar zaten `tables` modülünde raporlanır.
-    src_tables = {r["table_name"] for r in fetch_all(src_conn, SQL_TABLES, {"schema": mapping.source})}
-    tgt_tables = {r["table_name"] for r in fetch_all(tgt_conn, SQL_TABLES, {"schema": mapping.target})}
+    # tables_sql ile AYNI kapsam (GTT filtresi include_temp_tables'a bağlı).
+    sql_tables = tables_sql(cfg.modules.include_temp_tables)
+    src_tables = {r["table_name"] for r in fetch_all(src_conn, sql_tables, {"schema": mapping.source})}
+    tgt_tables = {r["table_name"] for r in fetch_all(tgt_conn, sql_tables, {"schema": mapping.target})}
     common_tables = src_tables & tgt_tables
 
-    _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary)
+    _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary,
+                         extra_status(cfg.output.extra_as))
     return summary
 
 
@@ -93,7 +96,7 @@ def _normalize_condition(cond) -> str:
     return text.strip().upper()
 
 
-def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
+def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary, extra):
     src_rows = fetch_all(src_conn, SQL_CONSTRAINTS, {"schema": mapping.source})
     tgt_rows = fetch_all(tgt_conn, SQL_CONSTRAINTS, {"schema": mapping.target})
 
@@ -134,7 +137,7 @@ def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
             summary.add(ValidationResult(
                 module="constraints", schema=mapping.source,
                 object_type=f"CONSTRAINT({label})", object_name=tbl,
-                status=Status.FAIL,
+                status=Status.FAILED,
                 source_value=cols or cond or "",
                 target_value="(yok)",
                 note=f"{label} constraint target'ta eksik",
@@ -145,7 +148,7 @@ def _compare_constraints(src_conn, tgt_conn, mapping, common_tables, summary):
             summary.add(ValidationResult(
                 module="constraints", schema=mapping.source,
                 object_type=f"CONSTRAINT({label})", object_name=tbl,
-                status=Status.WARNING,
+                status=extra,
                 source_value="(yok)",
                 target_value=cols or cond or "",
                 note=f"{label} constraint target'ta fazladan mevcut",

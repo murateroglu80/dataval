@@ -7,7 +7,7 @@ import re
 import hashlib
 import oracledb
 from validator.connection import fetch_all, fetch_one
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 from validator.debug import dbg
 
@@ -78,6 +78,7 @@ def run(
 
     summary = ModuleSummary(module="code_objects")
     mc = cfg.modules
+    extra = extra_status(cfg.output.extra_as)
 
     if not mc.code_objects_enabled:
         return summary
@@ -100,7 +101,8 @@ def run(
         summary.add(ValidationResult(
             module="code_objects", schema=mapping.source,
             object_type=obj_type, object_name=obj_name,
-            status=Status.FAIL,
+            status=Status.FAILED,
+            target_value="(yok)",
             note="Target'ta mevcut değil",
         ))
 
@@ -109,7 +111,8 @@ def run(
         summary.add(ValidationResult(
             module="code_objects", schema=mapping.source,
             object_type=obj_type, object_name=obj_name,
-            status=Status.WARNING,
+            status=extra,
+            source_value="(yok)",
             note="Target'ta fazladan mevcut",
         ))
 
@@ -132,10 +135,11 @@ def run(
         tgt_ddl = _get_ddl(tgt_conn, obj_type, obj_name, mapping.target)
 
         if src_ddl is None and tgt_ddl is None:
+            # DDL alınamadı → doğrulanamadı → FAILED.
             summary.add(ValidationResult(
                 module="code_objects", schema=mapping.source,
                 object_type=obj_type, object_name=obj_name,
-                status=Status.WARNING,
+                status=Status.FAILED,
                 note="DDL alınamadı (yetki?)",
             ))
             continue
@@ -148,7 +152,8 @@ def run(
         tgt_norm = tgt_norm.replace(mapping.target.upper(), "__SCHEMA__")
 
         if _hash(src_norm) == _hash(tgt_norm):
-            status = Status.WARNING if notes else Status.PASS
+            # DDL aynı; INVALID notu varsa (source/target invalid) NOT-SYNC, yoksa SYNC.
+            status = Status.NOT_SYNC if notes else Status.SYNC
             summary.add(ValidationResult(
                 module="code_objects", schema=mapping.source,
                 object_type=obj_type, object_name=obj_name,
@@ -162,7 +167,7 @@ def run(
             summary.add(ValidationResult(
                 module="code_objects", schema=mapping.source,
                 object_type=obj_type, object_name=obj_name,
-                status=Status.FAIL,
+                status=Status.NOT_SYNC,
                 source_value=_hash(src_norm),
                 target_value=_hash(tgt_norm),
                 note="; ".join(notes),

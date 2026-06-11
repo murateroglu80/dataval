@@ -159,17 +159,17 @@ def _classify(src_count, tgt_count, src_mode, tgt_mode, stale_warning, rc):
     Dönüş: (Status, source_value, target_value, note)
     Hem seri hem paralel yol bunu çağırır → karşılaştırma davranışı tek yerde.
     """
-    # Timeout: herhangi bir taraf None
+    # Timeout: herhangi bir taraf None → doğrulanamadı → FAILED
     if src_count is None or tgt_count is None:
         return (
-            Status.TIMEOUT,
+            Status.FAILED,
             str(src_count) if src_count else "TIMEOUT",
             str(tgt_count) if tgt_count else "TIMEOUT",
             f"Sorgu >{rc.timeout_sec}s — tabloyu --skip-tables ile atlayın",
         )
 
     if src_count == tgt_count:
-        status = Status.PASS
+        status = Status.SYNC
         note = stale_warning
     else:
         diff = abs(src_count - tgt_count)
@@ -178,10 +178,12 @@ def _classify(src_count, tgt_count, src_mode, tgt_mode, stale_warning, rc):
         tolerance = 5.0 if "SAMPLE" in src_mode else 0.0
 
         if pct_diff <= tolerance:
-            status = Status.WARNING
+            # Örnekleme toleransı içinde → veri eşit kabul edilir (SYNC, not'ta belirtilir).
+            status = Status.SYNC
             note = f"Fark: {diff:,} ({pct_diff:.1f}%) — örnekleme toleransı içinde"
         else:
-            status = Status.FAIL
+            # Tablo iki tarafta da var ama veri farklı → NOT-SYNC.
+            status = Status.NOT_SYNC
             note = f"Fark: {diff:,} ({pct_diff:.1f}%)"
 
         if stale_warning:
@@ -259,7 +261,7 @@ def _assemble(summary: ModuleSummary, job: dict, so: _SideOutcome, to: _SideOutc
         if to.error:
             parts.append(f"target: {to.error}")
         summary.add(_result(
-            schema, table, Status.ERROR,
+            schema, table, Status.FAILED,
             f"{so.count:,}" if so.count is not None else "ERR",
             f"{to.count:,}" if to.count is not None else "ERR",
             "; ".join(parts),

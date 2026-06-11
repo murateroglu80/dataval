@@ -5,7 +5,7 @@ Storage, compression ve tablespace farklarını config'e göre ignore eder.
 
 import oracledb
 from validator.connection import fetch_all
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 
 SQL_INDEXES = """
@@ -44,6 +44,7 @@ def run(
 ) -> ModuleSummary:
 
     summary = ModuleSummary(module="indexes")
+    extra = extra_status(cfg.output.extra_as)
 
     src_rows = fetch_all(src_conn, SQL_INDEXES, {"schema": mapping.source})
     tgt_rows = fetch_all(tgt_conn, SQL_INDEXES, {"schema": mapping.target})
@@ -71,10 +72,11 @@ def run(
             if alt_name:
                 tgt_row = tgt_idx[alt_name]
                 checked_tgt.add(alt_name)
+                # Yapı aynı, yalnızca isim farklı → yapısal olarak SYNC (not'ta belirtilir).
                 summary.add(ValidationResult(
                     module="indexes", schema=mapping.source,
                     object_type="INDEX", object_name=idx_name,
-                    status=Status.WARNING,
+                    status=Status.SYNC,
                     source_value=idx_name,
                     target_value=alt_name,
                     note="Index yeniden isimlendirilmiş (yapı aynı)",
@@ -84,7 +86,7 @@ def run(
                 summary.add(ValidationResult(
                     module="indexes", schema=mapping.source,
                     object_type="INDEX", object_name=idx_name,
-                    status=Status.FAIL,
+                    status=Status.FAILED,
                     source_value=_signature(src_row),
                     target_value="(yok)",
                     note="Index target'ta eksik",
@@ -97,38 +99,40 @@ def run(
         diffs = []
 
         if src_row["index_type"] != tgt_row["index_type"]:
-            diffs.append(f"tip: {src_row['index_type']}→{tgt_row['index_type']}")
+            diffs.append(("tip", src_row["index_type"], tgt_row["index_type"]))
 
         if src_row["uniqueness"] != tgt_row["uniqueness"]:
-            diffs.append(f"uniqueness: {src_row['uniqueness']}→{tgt_row['uniqueness']}")
+            diffs.append(("uniqueness", src_row["uniqueness"], tgt_row["uniqueness"]))
 
         if src_row["columns"] != tgt_row["columns"]:
-            diffs.append(f"kolonlar: {src_row['columns']}→{tgt_row['columns']}")
+            diffs.append(("kolonlar", src_row["columns"], tgt_row["columns"]))
 
         if diffs:
             summary.add(ValidationResult(
                 module="indexes", schema=mapping.source,
                 object_type="INDEX", object_name=idx_name,
-                status=Status.FAIL,
+                status=Status.NOT_SYNC,
                 source_value=_signature(src_row),
                 target_value=_signature(tgt_row),
-                note="; ".join(diffs),
+                diffs=diffs,
             ))
-        else:
-            # Status kontrolü — UNUSABLE varsa WARNING
-            status = Status.PASS
-            note = None
-            if tgt_row["status"] == "UNUSABLE":
-                status = Status.WARNING
-                note = "Index target'ta UNUSABLE durumunda"
-
+        elif tgt_row["status"] == "UNUSABLE":
+            # Yapı aynı ama hedefte kullanılamaz durumda → NOT-SYNC (eylem gerektirir).
             summary.add(ValidationResult(
                 module="indexes", schema=mapping.source,
                 object_type="INDEX", object_name=idx_name,
-                status=status,
+                status=Status.NOT_SYNC,
                 source_value=_signature(src_row),
                 target_value=_signature(tgt_row),
-                note=note,
+                note="Index target'ta UNUSABLE durumunda",
+            ))
+        else:
+            summary.add(ValidationResult(
+                module="indexes", schema=mapping.source,
+                object_type="INDEX", object_name=idx_name,
+                status=Status.SYNC,
+                source_value=_signature(src_row),
+                target_value=_signature(tgt_row),
             ))
 
     # Target'ta fazladan indexler
@@ -137,7 +141,7 @@ def run(
         summary.add(ValidationResult(
             module="indexes", schema=mapping.source,
             object_type="INDEX", object_name=idx_name,
-            status=Status.WARNING,
+            status=extra,
             source_value="(yok)",
             target_value=_signature(tgt_row),
             note="Target'ta fazladan index",

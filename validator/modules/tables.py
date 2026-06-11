@@ -1,15 +1,17 @@
 """
 Tables modülü — tablo varlığı ve kolon yapısı karşılaştırması.
-11g → 19c bilinen farklar (LOB storage, segment creation) WARNING olarak işaretlenir.
 
-Constraint karşılaştırması artık ayrı `constraints` modülündedir (config'teki
-`modules.constraints` bayrağıyla yönetilir). `SQL_TABLES` burada tanımlı kalır;
-`constraints` modülü ortak tablo kümesini hesaplamak için onu import eder.
+Statüler: eşit kolon → SYNC; tip/nullable/default farkı → NOT_SYNC (granüler `diffs`);
+target'ta eksik tablo/kolon → FAILED; target'ta fazla → cfg.output.extra_as.
+
+Constraint karşılaştırması ayrı `constraints` modülündedir. `tables_sql(include_temp)`
+ortak tablo sorgusunu üretir (GTT filtresi dahil); `constraints` modülü AYNI kapsamı
+görmek için onu import eder.
 """
 
 import oracledb
 from validator.connection import fetch_all
-from validator.result import ValidationResult, ModuleSummary, Status
+from validator.result import ValidationResult, ModuleSummary, Status, extra_status
 from validator.config_loader import AppConfig, SchemaMapping
 
 # ---------------------------------------------------------------------------
@@ -37,8 +39,19 @@ SELECT table_name
 FROM   all_tables
 WHERE  owner = :schema
   AND  table_name NOT LIKE 'BIN$%'
+{temp_filter}
 ORDER BY table_name
 """
+
+
+def tables_sql(include_temp: bool = False) -> str:
+    """
+    Ortak tablo sorgusunu döner. include_temp False (default) iken Global Temporary
+    Table'ları (temporary='Y') eler. tables ve constraints modülleri AYNI kapsamı
+    görsün diye her ikisi de bu yardımcıyı kullanır.
+    """
+    temp_filter = "" if include_temp else "  AND  temporary = 'N'"
+    return SQL_TABLES.format(temp_filter=temp_filter)
 
 # ---------------------------------------------------------------------------
 # Yardımcı: tip normalleştirme (11g ↔ 19c uyumu)
@@ -82,23 +95,27 @@ def run(
 ) -> ModuleSummary:
 
     summary = ModuleSummary(module="tables")
+    sql_tables = tables_sql(cfg.modules.include_temp_tables)
+    extra = extra_status(cfg.output.extra_as)
 
-    src_tables = {r["table_name"] for r in fetch_all(src_conn, SQL_TABLES, {"schema": mapping.source})}
-    tgt_tables = {r["table_name"] for r in fetch_all(tgt_conn, SQL_TABLES, {"schema": mapping.target})}
+    src_tables = {r["table_name"] for r in fetch_all(src_conn, sql_tables, {"schema": mapping.source})}
+    tgt_tables = {r["table_name"] for r in fetch_all(tgt_conn, sql_tables, {"schema": mapping.target})}
 
     for tbl in sorted(src_tables - tgt_tables):
         summary.add(ValidationResult(
             module="tables", schema=mapping.source,
             object_type="TABLE", object_name=tbl,
-            status=Status.FAIL,
-            note="Target'ta tablo mevcut degil",
+            status=Status.FAILED,
+            target_value="(yok)",
+            note="Target'ta tablo mevcut değil",
         ))
 
     for tbl in sorted(tgt_tables - src_tables):
         summary.add(ValidationResult(
             module="tables", schema=mapping.source,
             object_type="TABLE", object_name=tbl,
-            status=Status.WARNING,
+            status=extra,
+            source_value="(yok)",
             note="Target'ta fazladan tablo var",
         ))
 
@@ -122,7 +139,7 @@ def run(
             summary.add(ValidationResult(
                 module="tables", schema=mapping.source,
                 object_type="COLUMN", object_name=f"{tbl}.{col}",
-                status=Status.FAIL,
+                status=Status.FAILED,
                 source_value=_col_signature(s_cols[col]),
                 target_value="(yok)",
                 note="Kolon target'ta eksik",
@@ -132,7 +149,7 @@ def run(
             summary.add(ValidationResult(
                 module="tables", schema=mapping.source,
                 object_type="COLUMN", object_name=f"{tbl}.{col}",
-                status=Status.WARNING,
+                status=extra,
                 source_value="(yok)",
                 target_value=_col_signature(t_cols[col]),
                 note="Kolon target'ta fazladan mevcut",
@@ -149,30 +166,30 @@ def run(
                 if cfg.ignore.lob_storage and sr["data_type"] in ("CLOB","BLOB","NCLOB"):
                     pass
                 else:
-                    diffs.append(f"tip: {src_sig}->{tgt_sig}")
+                    diffs.append(("tip", src_sig, tgt_sig))
 
             if sr["nullable"] != tr["nullable"]:
-                diffs.append(f"nullable: {sr['nullable']}->{tr['nullable']}")
+                diffs.append(("nullable", sr["nullable"], tr["nullable"]))
 
             s_def = (sr["data_default"] or "").strip()
             t_def = (tr["data_default"] or "").strip()
             if s_def != t_def:
-                diffs.append(f"default: '{s_def}'->'{t_def}'")
+                diffs.append(("default", s_def or "-", t_def or "-"))
 
             if diffs:
                 summary.add(ValidationResult(
                     module="tables", schema=mapping.source,
                     object_type="COLUMN", object_name=f"{tbl}.{col}",
-                    status=Status.FAIL,
+                    status=Status.NOT_SYNC,
                     source_value=src_sig,
                     target_value=tgt_sig,
-                    note="; ".join(diffs),
+                    diffs=diffs,
                 ))
             else:
                 summary.add(ValidationResult(
                     module="tables", schema=mapping.source,
                     object_type="COLUMN", object_name=f"{tbl}.{col}",
-                    status=Status.PASS,
+                    status=Status.SYNC,
                     source_value=src_sig,
                     target_value=tgt_sig,
                 ))
