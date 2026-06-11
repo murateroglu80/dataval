@@ -5,6 +5,18 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.6.1] - 2026-06-11
+
+### Düzeltilenler
+- **DDL script üretimi çöküyordu (`KeyError: 'STATUS'`).** `validator/modules/ddl_generator.py`
+  satır sözlüklerine büyük harf anahtarlarla (`row["STATUS"]`, `"DDL"`, `"LAST_NUMBER"`,
+  `"GRANTEE"` …) erişiyordu; oysa `connection.fetch_all` tüm kolon adlarını küçük harfe indirir.
+  `_get_object_status` köşeli-parantez erişiminde `KeyError` fırlatıp `--generate-scripts`
+  akışını kırıyordu. Aynı kök neden `.get()` kullanan diğer erişimleri **sessizce** bozuyordu:
+  `_get_ddl_raw` her objede `None` dönüyor (SEQUENCE dışında hiçbir tip için DDL üretilmiyordu),
+  sequence `START WITH` gerçek `last_number` ile düzeltilemiyor, GRANT üretimi başarısız oluyordu.
+  Tüm anahtar erişimleri `fetch_all` sözleşmesine (küçük harf) uyumlu hale getirildi.
+
 ## [0.6.0] - 2026-06-11
 
 > **Kırıcı (breaking):** Statü adları ve çıktı eşiği değişti; `INFO/WARNING/ERROR` log
@@ -130,6 +142,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.6.1]: https://github.com/murateroglu80/dataval/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/murateroglu80/dataval/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/murateroglu80/dataval/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/murateroglu80/dataval/compare/v0.3.2...v0.4.0
