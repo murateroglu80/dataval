@@ -12,8 +12,9 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Index validasyonu** — Tip, kolon ve uniqueness karşılaştırması; yeniden isimlendirme tespiti
 - **Sequence kontrolü** — INCREMENT_BY, MIN/MAX, CACHE, CYCLE parametreleri; LAST_NUMBER toleransı
 - **Kod objeleri** — DDL hash karşılaştırması (whitespace normalize, schema adı soyutlanır)
+- **Grants (yetki) doğrulama** — source ↔ target object privilege karşılaştırması; `DBA_TAB_PRIVS` tercih, `ALL_TAB_PRIVS` fallback; `GRANTABLE`/`HIERARCHY` farkı NOT-SYNC olarak raporlanır (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
-- **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur
+- **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT** ve GRANT üretilir
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar ignore edilir, sorun sayılmaz
 - **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
@@ -120,6 +121,7 @@ modules:
   constraints: true        # PK/UK/FK/CHECK karşılaştırması — AYRI modül (aşağıya bkz)
   indexes: true
   sequences: true
+  grants: false            # object privilege karşılaştırması (opt-in; DBA_TAB_PRIVS tercih)
   include_temp_tables: false  # Global Temporary Table'ları (temporary='Y') kapsa (default: hayır)
   code_objects:
     enabled: true
@@ -161,8 +163,16 @@ generate_scripts:
     TRIGGER:   true
     TYPE:      true             # TYPE BODY ayrı dosyada otomatik üretilir
     SYNONYM:   false
+    INDEX:     true             # eksik index'ler (ALL_INDEXES native; UNIQUE/BITMAP/DESC/FBI)
+    CONSTRAINT: true            # eksik PK/UK/FK/CHECK (ALTER TABLE ADD; PK/UK→FK sıralı)
     GRANT:     true             # source schema üzerindeki object grant'ları
 ```
+
+> **Tamamen native üretim (v0.7.0+).** DDL üretimi artık `DBMS_METADATA` kullanmaz; her tip
+> ilgili sözlük görünümünden (`ALL_SOURCE`, `ALL_TRIGGERS`, `ALL_SYNONYMS`, `ALL_INDEXES`,
+> `ALL_CONSTRAINTS`, `ALL_SEQUENCES`) elle kurulur. Bu sayede `DBMS_METADATA.GET_DDL`'in 11g'de
+> oturumu çökerttiği `ORA-03113` sorunu tamamen ortadan kalkar ve PL/SQL kaynağı `ALL_SOURCE`'tan
+> birebir alınır.
 
 ---
 
@@ -203,37 +213,43 @@ python run.py --generate-missing --output-dir ./scripts/missing
 
 `--generate-missing` flag'i validation sonucunda target'ta eksik bulunan objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur.
 
-**Desteklenen tipler:** SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER, TYPE, TYPE BODY, SYNONYM, GRANT
+**Desteklenen tipler:** SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER, TYPE, TYPE BODY, SYNONYM, **INDEX**, **CONSTRAINT** (PK/UK/FK/CHECK), GRANT
 
 **Önemli notlar:**
-- TABLE ve INDEX kasıtlı olarak dışarıda bırakılmıştır. Bu tipler 11g→19c arasında TABLESPACE ve STORAGE farklılıkları içerdiğinden manuel müdahale gerektirir.
+- Üretim **tamamen native**'dir — hiçbir tip `DBMS_METADATA` kullanmaz (11g `ORA-03113` riski yok).
+- TABLE kasıtlı olarak dışarıda bırakılmıştır; 11g→19c arasında TABLESPACE/STORAGE farklılıkları manuel müdahale gerektirir. **INDEX artık üretilir** (`ALL_INDEXES`'ten native; UNIQUE/BITMAP/`DESC`/function-based).
+- **CONSTRAINT** (PK/UK/FK/CHECK) eksik bulunduğunda `ALTER TABLE ADD CONSTRAINT` olarak üretilir; bağımlılık için PK/UK önce, FK sonra sıralanır. FK referans tablo/kolonları ve `DELETE_RULE` (`ON DELETE CASCADE/SET NULL`) korunur.
 - SEQUENCE scriptleri `LAST_NUMBER` değerini korur — script `START WITH <mevcut_değer>` ile üretilir.
+- PL/SQL DDL'i `ALL_SOURCE`'tan birebir alınır; hedef şema yalnız `CREATE` başlığına enjekte edilir, gövde metni bozulmaz.
 - PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE için TYPE BODY de aynı şekilde.
-- INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir.
+- INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir (INVALID kontrolü yalnız PL/SQL tiplerine uygulanır).
 - Tüm dosyalar UTF-8 encoding ve `SET DEFINE OFF` başlığı ile SQL*Plus uyumlu üretilir.
 
 **Çıktı dosya yapısı:**
 
 ```
 ddl_output/
-├── SOURCE_SCHEMA_TYPE.sql
-├── SOURCE_SCHEMA_TYPE_BODY.sql
-├── SOURCE_SCHEMA_SEQUENCE.sql
-├── SOURCE_SCHEMA_FUNCTION.sql
-├── SOURCE_SCHEMA_PROCEDURE.sql
-├── SOURCE_SCHEMA_PACKAGE.sql
-├── SOURCE_SCHEMA_PACKAGE_BODY.sql
-├── SOURCE_SCHEMA_TRIGGER.sql
-├── SOURCE_SCHEMA_SYNONYM.sql
-├── SOURCE_SCHEMA_GRANT.sql
+├── TARGET_SCHEMA_TYPE.sql
+├── TARGET_SCHEMA_TYPE_BODY.sql
+├── TARGET_SCHEMA_SEQUENCE.sql
+├── TARGET_SCHEMA_SEQUENCE_ALTER.sql   # NOT-SYNC sequence hizalama (ALTER, opsiyonel)
+├── TARGET_SCHEMA_SYNONYM.sql
+├── TARGET_SCHEMA_INDEX.sql
+├── TARGET_SCHEMA_CONSTRAINT.sql       # PK/UK/FK/CHECK (ALTER TABLE ADD)
+├── TARGET_SCHEMA_FUNCTION.sql
+├── TARGET_SCHEMA_PROCEDURE.sql
+├── TARGET_SCHEMA_PACKAGE.sql
+├── TARGET_SCHEMA_PACKAGE_BODY.sql
+├── TARGET_SCHEMA_TRIGGER.sql
+├── TARGET_SCHEMA_GRANT.sql
 └── README_apply_order.txt
 ```
 
 **Uygulama sırası** (bağımlılık hiyerarşisi):
 
 ```
-TYPE → TYPE BODY → SEQUENCE → SYNONYM → FUNCTION →
-PROCEDURE → PACKAGE → PACKAGE BODY → TRIGGER → GRANT
+TYPE → TYPE BODY → SEQUENCE → SYNONYM → INDEX → CONSTRAINT →
+FUNCTION → PROCEDURE → PACKAGE → PACKAGE BODY → TRIGGER → GRANT
 ```
 
 ---
@@ -305,9 +321,11 @@ dataval/
 │   └── modules/
 │       ├── inventory.py
 │       ├── tables.py
+│       ├── constraints.py
 │       ├── indexes.py
 │       ├── sequences.py
 │       ├── code_objects.py
+│       ├── grants.py
 │       ├── row_counts.py
 │       └── ddl_generator.py
 ├── run.py
@@ -344,7 +362,8 @@ GRANT SELECT ANY SEQUENCE   TO valuser;   -- sequence'ler
 GRANT EXECUTE ANY PROCEDURE TO valuser;   -- procedure / function / package görünürlüğü
 GRANT EXECUTE ANY TYPE      TO valuser;   -- type görünürlüğü
 
--- DBMS_METADATA.GET_DDL'in BAŞKA şemaların DDL'ini çıkarabilmesi + katalog erişimi
+-- Native DDL üretimi (ALL_SOURCE/ALL_INDEXES/ALL_CONSTRAINTS …) + katalog erişimi +
+-- grants modülünün DBA_TAB_PRIVS'i okuyabilmesi (tam yetki görünürlüğü; yoksa ALL_TAB_PRIVS'e düşer)
 GRANT SELECT_CATALOG_ROLE   TO valuser;   -- alternatif: GRANT SELECT ANY DICTIONARY
 
 -- (YALNIZCA target'ta --refresh-stats kullanacaksanız. Source read-only olduğundan
@@ -500,10 +519,15 @@ Hızlı referans:
 
 ## Roadmap
 
-- [ ] **Auto-Sync / Remediation modülü (v0.7.0)** — `NOT-SYNC` ve `FAILED` tespit edilen
-  objeler için target'ta düzeltici DDL üretip (opsiyonel) çalıştırma: `FAILED`→`CREATE`
-  (mevcut DDL üretimi), `NOT-SYNC`→hedefe yönelik `ALTER` (granüler `diffs`'ten). Reporter'ın
-  topladığı sonuçları girdi alır; dry-run default, yalnızca target'a yazar (source read-only).
+- [x] **Native DDL üretimi (v0.7.0)** — tüm tipler `DBMS_METADATA`'sız üretilir (11g `ORA-03113`
+  yok); INDEX ve CONSTRAINT üretimi eklendi.
+- [x] **Grants doğrulama modülü (v0.8.0)** — source↔target object privilege karşılaştırması;
+  `DBA_TAB_PRIVS` tercih + `ALL_TAB_PRIVS` fallback.
+- [ ] **Auto-Sync / Remediation** — `NOT-SYNC` için hedefe yönelik `ALTER` (granüler `diffs`'ten);
+  dry-run default, yalnızca target'a yazar (source read-only). (`NOT-SYNC` sequence ALTER mevcut.)
+- [ ] **Semantic constraint eşleştirme** — isim yerine kolon+tip bazlı; pseudo-PK (UNIQUE+NOT NULL)
+  tespiti; `constraint_types` filtresi. (bkz. `docs/`)
+- [ ] **User & Grant izolasyon modülü** — `CREATE USER` + sistem-kullanıcı bypass'lı yetki diff.
 - [ ] PostgreSQL desteği
 - [ ] JSON çıktı modu (--output json)
 - [ ] CI/CD entegrasyonu için exit code yönetimi
