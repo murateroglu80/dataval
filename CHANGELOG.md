@@ -5,6 +5,37 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.7.0] - 2026-06-18
+
+### Eklenenler
+- **Native DDL üretimi tüm obje tiplerine yayıldı — `DBMS_METADATA` tamamen kaldırıldı.** v0.6.2'de
+  yalnız SEQUENCE native idi; artık `FUNCTION/PROCEDURE/PACKAGE/PACKAGE BODY/TYPE/TYPE BODY` →
+  `ALL_SOURCE`'tan birebir (`CREATE OR REPLACE` + kaynak metni), `TRIGGER` → `ALL_TRIGGERS`
+  (DESCRIPTION + TRIGGER_BODY; DISABLED ise `ALTER TRIGGER ... DISABLE`), `SYNONYM` →
+  `ALL_SYNONYMS`. Hiçbir tip `DBMS_METADATA` kullanmıyor → Oracle 11g `ORA-03113` riski **tamamen**
+  ortadan kalktı (yalnızca by-pass değil; üretici %100 DBMS_METADATA'sız).
+- **INDEX script üretimi (yeni tip).** Eksik index'ler `ALL_INDEXES` + `ALL_IND_COLUMNS`'tan native
+  üretiliyor; UNIQUE/BITMAP, `DESC` kolonlar ve function-based index ifadeleri
+  (`ALL_IND_EXPRESSIONS`) destekleniyor.
+- **CONSTRAINT script üretimi (yeni tip).** Eksik PK/UK/FK/CHECK → `ALTER TABLE ADD CONSTRAINT`
+  (`<target>_CONSTRAINT.sql`); PK/UK önce, FK sonra (bağımlılık sırası). FK referans tablo/kolonları
+  ve `DELETE_RULE` (`ON DELETE CASCADE/SET NULL`) çözülüyor, referans sahibi `replace_schema` ile
+  repoint ediliyor. Eksik constraint'ler `constraints` modülünün yapısal imzasıyla (ad değil)
+  eşleştiriliyor.
+
+### Değiştirilenler
+- **Şema niteleme güvenli hale getirildi.** PL/SQL DDL'inde blunt global string-replace yerine yalnız
+  `CREATE` başlığına hedef şema enjekte ediliyor + nitelikli (`SOURCE.`) çapraz referanslar repoint
+  ediliyor; gövde metni bozulmuyor.
+- **`generate_scripts.types` varsayılanları tek kaynağa indirildi.** `config_loader`'daki ikinci
+  kopya kaldırıldı (drift kaynağıydı); YAML override artık deep-merge, büyük/küçük harf duyarsız ve
+  bilinmeyen anahtarı sessizce düşürmüyor. `INDEX` ve `CONSTRAINT` tipleri eklendi (varsayılan açık).
+- **INVALID kontrolü yalnız PL/SQL tiplerine uygulanıyor** (INDEX/CONSTRAINT/SYNONYM için
+  `ALL_OBJECTS.STATUS` semantiği farklı olduğundan atlanıyor).
+
+### Kaldırılanlar
+- Ölü `DBMS_METADATA` kod yolu: `_get_ddl_raw`, `METADATA_TYPE_MAP` ve blunt `_replace_schema`.
+
 ## [0.6.2] - 2026-06-11
 
 ### Düzeltilenler
@@ -162,6 +193,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.7.0]: https://github.com/murateroglu80/dataval/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/murateroglu80/dataval/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/murateroglu80/dataval/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/murateroglu80/dataval/compare/v0.5.0...v0.6.0
