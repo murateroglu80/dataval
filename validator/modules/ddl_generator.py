@@ -416,15 +416,19 @@ def _cons_sig_value(columns, ctype: str, search_condition) -> str:
 
 
 def _build_constraint_ddl(row: dict, label: str, eff_schema: str, table: str,
-                          check_cond: Optional[str]) -> Optional[str]:
-    """PK/UK/CHECK için ALTER TABLE ADD CONSTRAINT üretir (FK ayrı: _build_fk_ddl)."""
+                          check_cond: Optional[str], using_index: Optional[str] = None) -> Optional[str]:
+    """
+    PK/UK/CHECK için ALTER TABLE ADD CONSTRAINT üretir (FK ayrı: _build_fk_ddl).
+    `using_index` verilirse PK/UK için `USING INDEX <ix>` eklenir → target'ta o kolonlarda
+    zaten unique index varsa ORA-02261 çakışması önlenir.
+    """
     name = row.get("constraint_name")
     cols = row.get("columns") or ""
     head = f"ALTER TABLE {eff_schema}.{table} ADD CONSTRAINT {name}"
-    if label == "PK":
-        return f"{head} PRIMARY KEY ({cols});"
-    if label == "UK":
-        return f"{head} UNIQUE ({cols});"
+    if label in ("PK", "UK"):
+        kw = "PRIMARY KEY" if label == "PK" else "UNIQUE"
+        using = f" USING INDEX {using_index}" if using_index else ""
+        return f"{head} {kw} ({cols}){using};"
     if label == "CHECK":
         return f"{head} CHECK ({str(check_cond or '').strip()});"
     return None
@@ -458,13 +462,62 @@ def _build_fk_ddl(conn, row: dict, eff_schema: str, table: str,
     )
 
 
+# Target conflict probe'ları (yalnız SELECT — target'a yazma yok).
+SQL_TGT_UIDX = """
+    SELECT i.index_name,
+           (SELECT LISTAGG(ic.column_name, ',') WITHIN GROUP (ORDER BY ic.column_position)
+              FROM all_ind_columns ic
+             WHERE ic.index_owner = i.owner AND ic.index_name = i.index_name) AS columns
+      FROM all_indexes i
+     WHERE i.owner = :schema AND i.table_name = :table AND i.uniqueness = 'UNIQUE'
+       AND i.index_name NOT LIKE 'BIN$%'
+"""
+SQL_TGT_CONS = """
+    SELECT c.constraint_name,
+           (SELECT LISTAGG(cc.column_name, ',') WITHIN GROUP (ORDER BY cc.position)
+              FROM all_cons_columns cc
+             WHERE cc.owner = c.owner AND cc.constraint_name = c.constraint_name) AS columns
+      FROM all_constraints c
+     WHERE c.owner = :schema AND c.table_name = :table AND c.constraint_type = :ctype
+       AND c.constraint_name NOT LIKE 'BIN$%'
+"""
+
+
+def _cols_set(columns) -> frozenset:
+    return frozenset(c for c in (columns or "").split(",") if c)
+
+
+def _target_existing_constraint(tconn, schema, table, ctype, cols_set):
+    """Target'ta aynı tip+kolon kümesinde (farklı adlı) constraint var mı → adı, yoksa None."""
+    if not tconn or not cols_set:
+        return None
+    for r in fetch_all(tconn, SQL_TGT_CONS, {"schema": schema, "table": table, "ctype": ctype}):
+        if _cols_set(r.get("columns")) == cols_set:
+            return r.get("constraint_name")
+    return None
+
+
+def _target_covering_index(tconn, schema, table, cols_set):
+    """Target'ta bu kolonları (küme) tam karşılayan unique index var mı → adı, yoksa None."""
+    if not tconn or not cols_set:
+        return None
+    for r in fetch_all(tconn, SQL_TGT_UIDX, {"schema": schema, "table": table}):
+        if _cols_set(r.get("columns")) == cols_set:
+            return r.get("index_name")
+    return None
+
+
 def _get_constraint_ddls(conn, source_schema: str, target_schema: str,
-                         replace_schema: bool, specs: list) -> list[tuple]:
+                         replace_schema: bool, specs: list, target_conn=None) -> list[tuple]:
     """
     specs: [(table, label, source_value), ...]. Source ALL_CONSTRAINTS'ı (tablo,tip)
     bazında sorgular, imza (source_value) ile eşleşen gerçek constraint'i bulup
-    ALTER TABLE ADD CONSTRAINT DDL'i kurar. Döner: [(fk_mi, table, ddl), ...]
+    conflict-safe ALTER TABLE ADD CONSTRAINT DDL'i kurar. Döner: [(fk_mi, table, ddl), ...]
     PK/UK/CHECK (0) FK'den (1) önce gelir.
+
+    Conflict-safe (target_conn verildiyse, PK/UK için): target'ta aynı kolonlarda zaten
+    constraint varsa DDL yerine yorum; covering unique index varsa `USING INDEX` eklenir
+    (ORA-02261 / ORA-00955 önlenir). Probe yalnız SELECT'tir.
     """
     eff_schema = target_schema if replace_schema else source_schema
     out: list[tuple] = []
@@ -492,7 +545,16 @@ def _get_constraint_ddls(conn, source_schema: str, target_schema: str,
             if label == "FK":
                 ddl = _build_fk_ddl(conn, row, eff_schema, table,
                                     source_schema, target_schema, replace_schema)
-            else:
+            elif label in ("PK", "UK"):
+                cset = _cols_set(row.get("columns"))
+                existing = _target_existing_constraint(target_conn, target_schema, table, ctype, cset)
+                if existing:
+                    ddl = (f"-- Zaten mevcut (target constraint {existing}, ayni kolonlar) — "
+                           f"atlandi: {row.get('constraint_name')} ({row.get('columns')})")
+                else:
+                    ui = _target_covering_index(target_conn, target_schema, table, cset)
+                    ddl = _build_constraint_ddl(row, label, eff_schema, table, real_cond, using_index=ui)
+            else:  # CHECK
                 ddl = _build_constraint_ddl(row, label, eff_schema, table, real_cond)
             if ddl:
                 out.append((1 if label == "FK" else 0, table, ddl))
@@ -561,6 +623,7 @@ def generate_scripts(
     console=None,                             # rich Console (opsiyonel)
     not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
     missing_constraints: Optional[list] = None,      # [(table, label, source_value), ...]
+    target_conn=None,                                # CONSTRAINT conflict probe (yalnız SELECT)
 ) -> list[str]:
     """
     Eksik objelerin DDL scriptlerini output_dir altına yazar. Ayrıca NOT-SYNC
@@ -685,7 +748,7 @@ def generate_scripts(
     if missing_constraints and cfg.types.get("CONSTRAINT", True):
         _write_constraint_file(
             source_conn, source_schema, target_schema, missing_constraints,
-            cfg, output_dir, generated_at, created_files, console,
+            cfg, output_dir, generated_at, created_files, console, target_conn,
         )
 
     # Uygulama sırası README'si
@@ -735,10 +798,10 @@ def _write_sequence_alter_file(source_conn, source_schema, target_schema, seq_na
 # CONSTRAINT dosyası — eksik PK/UK/FK/CHECK için ALTER TABLE ADD CONSTRAINT
 # ---------------------------------------------------------------------------
 def _write_constraint_file(source_conn, source_schema, target_schema, specs,
-                           cfg, output_dir, generated_at, created_files, console):
-    """Eksik constraint'ler için ALTER TABLE ADD CONSTRAINT script'i yazar (PK/UK→FK sıralı)."""
+                           cfg, output_dir, generated_at, created_files, console, target_conn=None):
+    """Eksik constraint'ler için conflict-safe ALTER TABLE ADD CONSTRAINT yazar (PK/UK→FK sıralı)."""
     ddls = _get_constraint_ddls(
-        source_conn, source_schema, target_schema, cfg.replace_schema, specs
+        source_conn, source_schema, target_schema, cfg.replace_schema, specs, target_conn
     )
     if not ddls:
         return

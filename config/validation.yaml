@@ -11,6 +11,7 @@ modules:
   tables: true
   indexes: true
   constraints: true
+  constraint_types: ALL         # ALL veya alt küme: [PK, UK, FK, CHECK]
   sequences: true
   grants: false                 # object privilege (yetki) karşılaştırması (src↔tgt);
                                 # DBA_TAB_PRIVS tercih + ALL_TAB_PRIVS fallback. Opt-in.

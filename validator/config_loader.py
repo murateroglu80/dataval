@@ -77,6 +77,9 @@ class ModulesConfig:
     tables: bool = True
     indexes: bool = True
     constraints: bool = True
+    # constraint_types: hangi constraint tipleri karşılaştırılır/üretilir.
+    # {"PK","UK","FK","CHECK"} (ALL eşdeğeri) veya bir alt küme.
+    constraint_types: set = field(default_factory=lambda: {"PK", "UK", "FK", "CHECK"})
     sequences: bool = True
     grants: bool = False
     # include_temp_tables: Global Temporary Table'ları (all_tables.temporary='Y')
@@ -209,6 +212,22 @@ def _parse_oracle_client(raw: dict, source_cfg: ConnectionConfig) -> OracleClien
     return OracleClientConfig()
 
 
+_ALL_CONSTRAINT_TYPES = {"PK", "UK", "FK", "CHECK"}
+
+
+def _parse_constraint_types(raw_val) -> set:
+    """`ALL`/boş → tüm tipler; liste → upper-normalize alt küme (geçersiz → ALL)."""
+    if raw_val is None:
+        return set(_ALL_CONSTRAINT_TYPES)
+    if isinstance(raw_val, str):
+        if raw_val.strip().upper() in ("ALL", ""):
+            return set(_ALL_CONSTRAINT_TYPES)
+        raw_val = [raw_val]
+    sel = {str(t).strip().upper() for t in raw_val}
+    sel &= _ALL_CONSTRAINT_TYPES
+    return sel or set(_ALL_CONSTRAINT_TYPES)
+
+
 def _parse_modules(raw: dict) -> ModulesConfig:
     co = raw.get("code_objects", {})
     return ModulesConfig(
@@ -216,6 +235,7 @@ def _parse_modules(raw: dict) -> ModulesConfig:
         tables=raw.get("tables", True),
         indexes=raw.get("indexes", True),
         constraints=raw.get("constraints", True),
+        constraint_types=_parse_constraint_types(raw.get("constraint_types", "ALL")),
         sequences=raw.get("sequences", True),
         grants=raw.get("grants", False),
         include_temp_tables=bool(raw.get("include_temp_tables", False)),
