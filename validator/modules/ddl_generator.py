@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from validator.connection import fetch_all, fetch_one
+from validator.modules.constraints import _normalize_condition
 from validator.result import ValidationResult, Status
 
 
@@ -26,6 +27,8 @@ APPLY_ORDER = [
     "TYPE BODY",
     "SEQUENCE",
     "SYNONYM",
+    "INDEX",
+    "CONSTRAINT",
     "FUNCTION",
     "PROCEDURE",
     "PACKAGE",
@@ -34,17 +37,10 @@ APPLY_ORDER = [
     "GRANT",
 ]
 
-# DBMS_METADATA tip adı eşleştirmesi
-METADATA_TYPE_MAP = {
-    "TYPE":         "TYPE",
-    "TYPE BODY":    "TYPE_BODY",
-    "SEQUENCE":     "SEQUENCE",
-    "SYNONYM":      "SYNONYM",
-    "FUNCTION":     "FUNCTION",
-    "PROCEDURE":    "PROCEDURE",
-    "PACKAGE":      "PACKAGE",
-    "PACKAGE BODY": "PACKAGE_BODY",
-    "TRIGGER":      "TRIGGER",
+# DDL'i ALL_SOURCE'tan kurulan PL/SQL tipleri (INVALID kontrolü bunlara uygulanır).
+PLSQL_TYPES = {
+    "FUNCTION", "PROCEDURE", "PACKAGE", "PACKAGE BODY",
+    "TYPE", "TYPE BODY", "TRIGGER",
 }
 
 # PACKAGE seçilince PACKAGE BODY da otomatik eklenir
@@ -99,33 +95,6 @@ def _get_object_status(conn, schema: str, obj_type: str, obj_name: str) -> str:
     """
     row = fetch_one(conn, sql, {"schema": schema, "obj_type": obj_type, "obj_name": obj_name})
     return row["status"] if row else "UNKNOWN"
-
-
-# ---------------------------------------------------------------------------
-# DBMS_METADATA.GET_DDL
-# ---------------------------------------------------------------------------
-def _get_ddl_raw(conn, meta_type: str, obj_name: str, schema: str) -> Optional[str]:
-    """DBMS_METADATA.GET_DDL ile ham DDL'i çeker."""
-    sql = """
-        SELECT DBMS_METADATA.GET_DDL(:obj_type, :obj_name, :schema) AS ddl
-          FROM DUAL
-    """
-    try:
-        row = fetch_one(conn, sql, {"obj_type": meta_type, "obj_name": obj_name, "schema": schema})
-        if row and row.get("ddl"):
-            return str(row["ddl"])
-    except Exception as e:
-        err = str(e)
-        # ORA-31603: obje bulunamadı — sessizce None dön
-        if "ORA-31603" in err or "ORA-04043" in err:
-            return None
-        # Ölümcül kopma (11g DBMS_METADATA-in-SQL hatası vb.): ham traceback yerine
-        # None dön ki tek bir obje tüm CLI'yi çökertmesin. SEQUENCE artık bu yolu
-        # KULLANMAZ (native üretilir); bu koruma diğer tipler içindir.
-        if any(code in err for code in ("ORA-03113", "ORA-03114", "DPY-4011", "DPI-1080")):
-            return None
-        raise
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -224,15 +193,312 @@ def _build_alter_sequence(seq_row: dict, schema: str, name: str) -> str:
     return "\n".join(lines)
 
 
-def _get_sequence_ddl(conn, obj_name: str, schema: str) -> Optional[str]:
+def _get_sequence_ddl(conn, obj_name: str, schema: str,
+                      eff_schema: Optional[str] = None) -> Optional[str]:
     """
     SEQUENCE için `CREATE SEQUENCE` DDL'ini ALL_SEQUENCES'tan native kurar
     (DBMS_METADATA yok → ORA-03113 yok). LAST_NUMBER `START WITH` olarak yazılır.
+    `schema` = ALL_SEQUENCES sahibi (source); `eff_schema` = çıktıda nitelenecek şema.
     """
     seq_row = _fetch_seq_row(conn, schema, obj_name)
     if not seq_row:
         return None
-    return _build_create_sequence(seq_row, schema, obj_name)
+    return _build_create_sequence(seq_row, eff_schema or schema, obj_name)
+
+
+# ---------------------------------------------------------------------------
+# Native DDL — PL/SQL (ALL_SOURCE), TRIGGER (ALL_TRIGGERS), SYNONYM, INDEX,
+# CONSTRAINT. Hiçbiri DBMS_METADATA KULLANMAZ → 11g ORA-03113 tamamen by-pass.
+# ---------------------------------------------------------------------------
+
+# CREATE başlığında niteliksiz obje adının önüne hedef şemayı enjekte eden dar
+# desen — gövdeyi (blunt _replace_schema'nın aksine) ASLA bozmaz.
+_HEADER_KEYWORDS = r"(?:(?:NON)?EDITIONABLE\s+)?(?:PACKAGE\s+BODY|TYPE\s+BODY|PACKAGE|TYPE|FUNCTION|PROCEDURE|TRIGGER)"
+
+
+def _inject_schema_into_header(ddl: str, target_schema: str, name: str) -> str:
+    """`CREATE OR REPLACE PACKAGE pkg` → `... PACKAGE target.pkg` (yalnız ilk başlık)."""
+    pat = re.compile(
+        r"(CREATE\s+OR\s+REPLACE\s+" + _HEADER_KEYWORDS + r"\s+)(\"?)" + re.escape(name) + r"(\"?)",
+        re.IGNORECASE,
+    )
+    return pat.sub(lambda m: f"{m.group(1)}{target_schema}.{m.group(2)}{name}{m.group(3)}", ddl, count=1)
+
+
+def _replace_qualified_schema(ddl: str, source_schema: str, target_schema: str) -> str:
+    """Yalnız `SOURCE.` biçimindeki nitelikli referansları `TARGET.`'a çevirir (gövde güvenli)."""
+    if source_schema.upper() == target_schema.upper():
+        return ddl
+    pat = re.compile(r"\b" + re.escape(source_schema) + r"\s*\.", re.IGNORECASE)
+    return pat.sub(target_schema + ".", ddl)
+
+
+# --- PL/SQL: ALL_SOURCE -----------------------------------------------------
+SQL_SOURCE = """
+    SELECT TEXT
+      FROM ALL_SOURCE
+     WHERE OWNER = :schema AND NAME = :name AND TYPE = :obj_type
+     ORDER BY LINE
+"""
+
+
+def _get_source_ddl(conn, obj_type: str, schema: str, name: str,
+                    target_schema: str, replace_schema: bool) -> Optional[str]:
+    """
+    PL/SQL objesinin DDL'ini ALL_SOURCE'tan birebir kurar (DBMS_METADATA yok).
+    Kaynak metni niteliksizdir; başına `CREATE OR REPLACE` eklenir, hedef şema
+    yalnızca CREATE başlığına enjekte edilir + nitelikli çapraz referanslar repoint edilir.
+    """
+    rows = fetch_all(conn, SQL_SOURCE, {"schema": schema, "name": name, "obj_type": obj_type})
+    if not rows:
+        return None
+    body = "".join(str(r.get("text") or "") for r in rows)
+    if not body.strip():
+        return None
+    ddl = "CREATE OR REPLACE " + body.lstrip()
+    if replace_schema and schema.upper() != target_schema.upper():
+        ddl = _inject_schema_into_header(ddl, target_schema, name)
+        ddl = _replace_qualified_schema(ddl, schema, target_schema)
+    return ddl
+
+
+# --- TRIGGER: ALL_TRIGGERS --------------------------------------------------
+SQL_TRIGGER = """
+    SELECT DESCRIPTION, TRIGGER_BODY, STATUS
+      FROM ALL_TRIGGERS
+     WHERE OWNER = :schema AND TRIGGER_NAME = :name
+"""
+
+
+def _get_trigger_ddl(conn, schema: str, name: str,
+                     target_schema: str, replace_schema: bool) -> Optional[str]:
+    """
+    TRIGGER DDL'ini ALL_TRIGGERS'tan kurar: CREATE OR REPLACE TRIGGER + DESCRIPTION
+    + TRIGGER_BODY. WHEN_CLAUSE 11g'de DESCRIPTION içine gömülüdür. DISABLED ise
+    ALTER TRIGGER ... DISABLE eklenir.
+    """
+    row = fetch_one(conn, SQL_TRIGGER, {"schema": schema, "name": name})
+    if not row:
+        return None
+    desc = str(row.get("description") or "").strip()
+    tbody = str(row.get("trigger_body") or "")
+    if not desc:
+        return None
+    ddl = "CREATE OR REPLACE TRIGGER " + desc + "\n" + tbody
+    repl = replace_schema and schema.upper() != target_schema.upper()
+    if repl:
+        ddl = _inject_schema_into_header(ddl, target_schema, name)
+        ddl = _replace_qualified_schema(ddl, schema, target_schema)
+    if str(row.get("status") or "").upper() == "DISABLED":
+        eff = target_schema if repl else schema
+        ddl = ddl.rstrip() + f"\n/\nALTER TRIGGER {eff}.{name} DISABLE;"
+    return ddl
+
+
+# --- SYNONYM: ALL_SYNONYMS --------------------------------------------------
+SQL_SYNONYM = """
+    SELECT TABLE_OWNER, TABLE_NAME, DB_LINK
+      FROM ALL_SYNONYMS
+     WHERE OWNER = :schema AND SYNONYM_NAME = :name
+"""
+
+
+def _get_synonym_ddl(conn, schema: str, name: str, eff_schema: str,
+                     target_schema: str, replace_schema: bool) -> Optional[str]:
+    """SYNONYM DDL'ini ALL_SYNONYMS'tan kurar."""
+    row = fetch_one(conn, SQL_SYNONYM, {"schema": schema, "name": name})
+    if not row:
+        return None
+    towner = row.get("table_owner")
+    tname  = row.get("table_name")
+    dblink = row.get("db_link")
+    if replace_schema and towner and towner.upper() == schema.upper():
+        towner = target_schema
+    ref = f"{towner}.{tname}" if towner else str(tname)
+    if dblink:
+        ref += f"@{dblink}"
+    return f"CREATE OR REPLACE SYNONYM {eff_schema}.{name} FOR {ref}"
+
+
+# --- INDEX: ALL_INDEXES + ALL_IND_COLUMNS (+ ALL_IND_EXPRESSIONS) -----------
+SQL_INDEX_META = """
+    SELECT INDEX_TYPE, UNIQUENESS, TABLE_NAME, TABLE_OWNER
+      FROM ALL_INDEXES
+     WHERE OWNER = :schema AND INDEX_NAME = :name
+"""
+SQL_INDEX_COLS = """
+    SELECT COLUMN_NAME, DESCEND, COLUMN_POSITION
+      FROM ALL_IND_COLUMNS
+     WHERE INDEX_OWNER = :schema AND INDEX_NAME = :name
+     ORDER BY COLUMN_POSITION
+"""
+# COLUMN_EXPRESSION 11g'de LONG → tek başına, ORDER BY/aggregate olmadan çekilir.
+SQL_INDEX_EXPR = """
+    SELECT COLUMN_POSITION, COLUMN_EXPRESSION
+      FROM ALL_IND_EXPRESSIONS
+     WHERE INDEX_OWNER = :schema AND INDEX_NAME = :name
+"""
+
+
+def _get_index_ddl(conn, schema: str, name: str, eff_schema: str) -> Optional[str]:
+    """INDEX DDL'ini ALL_INDEXES + kolon/ifade view'larından kurar (native)."""
+    meta = fetch_one(conn, SQL_INDEX_META, {"schema": schema, "name": name})
+    if not meta:
+        return None
+    idx_type = str(meta.get("index_type") or "").upper()
+    unique   = str(meta.get("uniqueness") or "").upper() == "UNIQUE"
+    table    = meta.get("table_name")
+    cols = fetch_all(conn, SQL_INDEX_COLS, {"schema": schema, "name": name})
+    if not cols:
+        return None
+
+    expr_map = {}
+    if "FUNCTION-BASED" in idx_type:
+        for e in fetch_all(conn, SQL_INDEX_EXPR, {"schema": schema, "name": name}):
+            expr_map[e.get("column_position")] = str(e.get("column_expression") or "")
+
+    parts = []
+    for c in cols:
+        pos = c.get("column_position")
+        if pos in expr_map and expr_map[pos]:
+            col = expr_map[pos]
+        else:
+            col = str(c.get("column_name"))
+            if str(c.get("descend") or "").upper() == "DESC":
+                col += " DESC"
+        parts.append(col)
+
+    kind = "BITMAP " if "BITMAP" in idx_type else ("UNIQUE " if unique else "")
+    return (
+        f"CREATE {kind}INDEX {eff_schema}.{name}\n"
+        f"  ON {eff_schema}.{table} ({', '.join(parts)})"
+    )
+
+
+# --- CONSTRAINT: ALL_CONSTRAINTS + ALL_CONS_COLUMNS -------------------------
+_LABEL_TO_CTYPE = {"PK": "P", "UK": "U", "FK": "R", "CHECK": "C"}
+
+SQL_CONS_META = """
+    SELECT c.constraint_name, c.constraint_type, c.r_owner, c.r_constraint_name,
+           c.delete_rule,
+           (SELECT LISTAGG(cc.column_name, ',') WITHIN GROUP (ORDER BY cc.position)
+              FROM all_cons_columns cc
+             WHERE cc.owner = c.owner AND cc.constraint_name = c.constraint_name) AS columns
+      FROM all_constraints c
+     WHERE c.owner = :schema AND c.table_name = :table
+       AND c.constraint_type = :ctype
+       AND c.constraint_name NOT LIKE 'BIN$%'
+       AND c.constraint_name NOT LIKE 'SYS\\_%' ESCAPE '\\'
+"""
+# CHECK koşulu (LONG) — sade, ayrı sorgu (ORA-00932 izolasyonu).
+SQL_CONS_CHECK = """
+    SELECT constraint_name, search_condition
+      FROM all_constraints
+     WHERE owner = :schema AND table_name = :table AND constraint_type = 'C'
+       AND constraint_name NOT LIKE 'BIN$%'
+       AND constraint_name NOT LIKE 'SYS\\_%' ESCAPE '\\'
+"""
+SQL_REF_TABLE = """
+    SELECT table_name,
+           (SELECT LISTAGG(cc.column_name, ',') WITHIN GROUP (ORDER BY cc.position)
+              FROM all_cons_columns cc
+             WHERE cc.owner = c.owner AND cc.constraint_name = c.constraint_name) AS columns
+      FROM all_constraints c
+     WHERE c.owner = :r_owner AND c.constraint_name = :r_name
+"""
+
+
+def _cons_sig_value(columns, ctype: str, search_condition) -> str:
+    """constraints.py'deki source_value (=cols or cond) ile birebir aynı imzayı üretir."""
+    cols = columns or ""
+    cond = _normalize_condition(search_condition) if ctype == "C" else ""
+    return cols or cond or ""
+
+
+def _build_constraint_ddl(row: dict, label: str, eff_schema: str, table: str,
+                          check_cond: Optional[str]) -> Optional[str]:
+    """PK/UK/CHECK için ALTER TABLE ADD CONSTRAINT üretir (FK ayrı: _build_fk_ddl)."""
+    name = row.get("constraint_name")
+    cols = row.get("columns") or ""
+    head = f"ALTER TABLE {eff_schema}.{table} ADD CONSTRAINT {name}"
+    if label == "PK":
+        return f"{head} PRIMARY KEY ({cols});"
+    if label == "UK":
+        return f"{head} UNIQUE ({cols});"
+    if label == "CHECK":
+        return f"{head} CHECK ({str(check_cond or '').strip()});"
+    return None
+
+
+def _build_fk_ddl(conn, row: dict, eff_schema: str, table: str,
+                  source_schema: str, target_schema: str, replace_schema: bool) -> Optional[str]:
+    """FK için referans tablo/kolonları çözüp tam ALTER TABLE ... FOREIGN KEY üretir."""
+    ref = fetch_one(conn, SQL_REF_TABLE,
+                    {"r_owner": row.get("r_owner"), "r_name": row.get("r_constraint_name")})
+    if not ref:
+        return None
+    r_owner = row.get("r_owner")
+    # Referans, source şemasını işaret ediyorsa target'a repoint et.
+    if replace_schema and r_owner and r_owner.upper() == source_schema.upper():
+        r_eff = target_schema
+    else:
+        r_eff = r_owner
+    cols   = row.get("columns") or ""
+    rtable = ref.get("table_name")
+    rcols  = ref.get("columns") or ""
+    rule = str(row.get("delete_rule") or "").upper()
+    on_delete = ""
+    if rule == "CASCADE":
+        on_delete = " ON DELETE CASCADE"
+    elif rule == "SET NULL":
+        on_delete = " ON DELETE SET NULL"
+    return (
+        f"ALTER TABLE {eff_schema}.{table} ADD CONSTRAINT {row.get('constraint_name')} "
+        f"FOREIGN KEY ({cols}) REFERENCES {r_eff}.{rtable} ({rcols}){on_delete};"
+    )
+
+
+def _get_constraint_ddls(conn, source_schema: str, target_schema: str,
+                         replace_schema: bool, specs: list) -> list[tuple]:
+    """
+    specs: [(table, label, source_value), ...]. Source ALL_CONSTRAINTS'ı (tablo,tip)
+    bazında sorgular, imza (source_value) ile eşleşen gerçek constraint'i bulup
+    ALTER TABLE ADD CONSTRAINT DDL'i kurar. Döner: [(fk_mi, table, ddl), ...]
+    PK/UK/CHECK (0) FK'den (1) önce gelir.
+    """
+    eff_schema = target_schema if replace_schema else source_schema
+    out: list[tuple] = []
+    # (table, label) → istenen source_value kümesi
+    wanted: dict[tuple, set] = {}
+    for table, label, sigval in specs:
+        wanted.setdefault((table, label), set()).add(sigval or "")
+
+    for (table, label), sigvals in wanted.items():
+        ctype = _LABEL_TO_CTYPE.get(label)
+        if not ctype:
+            continue
+        rows = fetch_all(conn, SQL_CONS_META,
+                         {"schema": source_schema, "table": table, "ctype": ctype})
+        cond_map = {}
+        if ctype == "C":
+            for cr in fetch_all(conn, SQL_CONS_CHECK, {"schema": source_schema, "table": table}):
+                cond_map[cr.get("constraint_name")] = cr.get("search_condition")
+
+        for row in rows:
+            real_cond = cond_map.get(row.get("constraint_name")) if ctype == "C" else None
+            sig = _cons_sig_value(row.get("columns"), ctype, real_cond)
+            if sig not in sigvals:
+                continue
+            if label == "FK":
+                ddl = _build_fk_ddl(conn, row, eff_schema, table,
+                                    source_schema, target_schema, replace_schema)
+            else:
+                ddl = _build_constraint_ddl(row, label, eff_schema, table, real_cond)
+            if ddl:
+                out.append((1 if label == "FK" else 0, table, ddl))
+
+    out.sort(key=lambda t: (t[0], t[1]))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -270,17 +536,6 @@ def _get_grant_statements(conn, schema: str, target_schema: str,
 
 
 # ---------------------------------------------------------------------------
-# DDL içindeki schema adını replace et
-# ---------------------------------------------------------------------------
-def _replace_schema(ddl: str, source_schema: str, target_schema: str) -> str:
-    if source_schema.upper() == target_schema.upper():
-        return ddl
-    # Büyük-küçük harf duyarsız, word boundary ile
-    pattern = re.compile(re.escape(source_schema), re.IGNORECASE)
-    return pattern.sub(target_schema, ddl)
-
-
-# ---------------------------------------------------------------------------
 # DDL'i SQL*Plus uyumlu hale getir
 # ---------------------------------------------------------------------------
 def _normalize_ddl(ddl: str) -> str:
@@ -309,6 +564,7 @@ def generate_scripts(
     cfg,                                      # GenerateScriptsConfig
     console=None,                             # rich Console (opsiyonel)
     not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
+    missing_constraints: Optional[list] = None,      # [(table, label, source_value), ...]
 ) -> list[str]:
     """
     Eksik objelerin DDL scriptlerini output_dir altına yazar. Ayrıca NOT-SYNC
@@ -327,6 +583,9 @@ def generate_scripts(
         if t == "GRANT":
             if cfg.types.get("GRANT", True):
                 active_types.append("GRANT")
+            continue
+        if t == "CONSTRAINT":
+            # CONSTRAINT ayrı yazıcı ile (imza-eşleşmeli) işlenir, döngü dışı.
             continue
         base = t.replace(" BODY", "")
         if cfg.types.get(base, False) or cfg.types.get(t, False):
@@ -358,36 +617,45 @@ def generate_scripts(
         lines = [_file_header(target_schema, obj_type, generated_at)]
         written = 0
         skipped = 0
+        eff_schema = target_schema if cfg.replace_schema else source_schema
 
         for obj_name in sorted(objects):
-            status = _get_object_status(source_conn, source_schema, obj_type, obj_name)
-
-            if status == "INVALID" and not cfg.include_invalid:
-                if console:
-                    console.print(
-                        f"  [yellow]⚠  SKIP[/yellow] {obj_type} {obj_name} — INVALID "
-                        f"(include_invalid=false)"
-                    )
-                skipped += 1
-                continue
+            # INVALID kontrolü yalnız PL/SQL tipleri için anlamlı (ALL_OBJECTS.STATUS).
+            if obj_type in PLSQL_TYPES:
+                status = _get_object_status(source_conn, source_schema, obj_type, obj_name)
+                if status == "INVALID" and not cfg.include_invalid:
+                    if console:
+                        console.print(
+                            f"  [yellow]⚠  SKIP[/yellow] {obj_type} {obj_name} — INVALID "
+                            f"(include_invalid=false)"
+                        )
+                    skipped += 1
+                    continue
+            else:
+                status = "N/A"
 
             note = "INVALID — lütfen manuel kontrol edin" if status == "INVALID" else ""
             lines.append(_object_header(obj_name, status, note))
 
-            # DDL çek
+            # DDL çek — hepsi NATIVE (DBMS_METADATA YOK → 11g ORA-03113 yok).
             if obj_type == "SEQUENCE":
-                ddl = _get_sequence_ddl(source_conn, obj_name, source_schema)
-            else:
-                meta_type = METADATA_TYPE_MAP.get(obj_type, obj_type)
-                ddl = _get_ddl_raw(source_conn, meta_type, obj_name, source_schema)
+                ddl = _get_sequence_ddl(source_conn, obj_name, source_schema, eff_schema)
+            elif obj_type == "SYNONYM":
+                ddl = _get_synonym_ddl(source_conn, source_schema, obj_name, eff_schema,
+                                       target_schema, cfg.replace_schema)
+            elif obj_type == "INDEX":
+                ddl = _get_index_ddl(source_conn, source_schema, obj_name, eff_schema)
+            elif obj_type == "TRIGGER":
+                ddl = _get_trigger_ddl(source_conn, source_schema, obj_name,
+                                       target_schema, cfg.replace_schema)
+            else:  # FUNCTION/PROCEDURE/PACKAGE[BODY]/TYPE[BODY] → ALL_SOURCE
+                ddl = _get_source_ddl(source_conn, obj_type, source_schema, obj_name,
+                                      target_schema, cfg.replace_schema)
 
             if not ddl:
                 lines.append(f"-- !! DDL alınamadı: {obj_name}\n\n")
                 skipped += 1
                 continue
-
-            if cfg.replace_schema:
-                ddl = _replace_schema(ddl, source_schema, target_schema)
 
             ddl = _normalize_ddl(ddl)
             lines.append(ddl + "\n\n")
@@ -414,6 +682,13 @@ def generate_scripts(
     if not_sync_sequences and (cfg.types.get("SEQUENCE", False)):
         _write_sequence_alter_file(
             source_conn, source_schema, target_schema, sorted(set(not_sync_sequences)),
+            cfg, output_dir, generated_at, created_files, console,
+        )
+
+    # CONSTRAINT (PK/UK/FK/CHECK) — CONSTRAINT tipi açıksa
+    if missing_constraints and cfg.types.get("CONSTRAINT", True):
+        _write_constraint_file(
+            source_conn, source_schema, target_schema, missing_constraints,
             cfg, output_dir, generated_at, created_files, console,
         )
 
@@ -457,6 +732,39 @@ def _write_sequence_alter_file(source_conn, source_schema, target_schema, seq_na
         console.print(
             f"  [green]✅[/green] {filename}  "
             f"([cyan]{written}[/cyan] NOT-SYNC sequence → ALTER)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CONSTRAINT dosyası — eksik PK/UK/FK/CHECK için ALTER TABLE ADD CONSTRAINT
+# ---------------------------------------------------------------------------
+def _write_constraint_file(source_conn, source_schema, target_schema, specs,
+                           cfg, output_dir, generated_at, created_files, console):
+    """Eksik constraint'ler için ALTER TABLE ADD CONSTRAINT script'i yazar (PK/UK→FK sıralı)."""
+    ddls = _get_constraint_ddls(
+        source_conn, source_schema, target_schema, cfg.replace_schema, specs
+    )
+    if not ddls:
+        return
+
+    lines = [_file_header(target_schema, "CONSTRAINT", generated_at)]
+    last_table = None
+    for _order, table, ddl in ddls:
+        if table != last_table:
+            lines.append(_object_header(table, "FAILED", "eksik constraint(ler)"))
+            last_table = table
+        lines.append(ddl + "\n")
+
+    filename = f"{target_schema}_CONSTRAINT.sql"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    created_files.append(str(filepath))
+    if console:
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{len(ddls)}[/cyan] constraint)"
         )
 
 

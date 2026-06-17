@@ -76,6 +76,8 @@ generate_scripts:
     TRIGGER:   true
     TYPE:      true             # TYPE BODY ayrı dosyada otomatik üretilir
     SYNONYM:   false
+    INDEX:     true             # eksik index'ler (ALL_INDEXES native)
+    CONSTRAINT: true            # eksik PK/UK/FK/CHECK (ALTER TABLE ADD; PK/UK→FK sıralı)
     GRANT:     true             # source schema üzerindeki object grant'ları
 
 ignore_differences:

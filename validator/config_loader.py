@@ -120,6 +120,8 @@ class GenerateScriptsConfig:
         "TRIGGER":      True,
         "TYPE":         True,
         "SYNONYM":      False,
+        "INDEX":        True,
+        "CONSTRAINT":   True,
         "GRANT":        True,
     })
 
@@ -311,18 +313,14 @@ def _parse_output(raw: dict, legacy_debug: dict) -> OutputConfig:
 
 
 def _parse_generate_scripts(raw: dict) -> GenerateScriptsConfig:
-    default_types = {
-        "SEQUENCE":  True,
-        "FUNCTION":  True,
-        "PROCEDURE": True,
-        "PACKAGE":   True,
-        "TRIGGER":   True,
-        "TYPE":      True,
-        "SYNONYM":   False,
-        "GRANT":     True,
-    }
-    types_raw = raw.get("types", {})
-    merged = {k: types_raw.get(k, v) for k, v in default_types.items()}
+    # Tip varsayılanları TEK kaynaktan gelir (GenerateScriptsConfig.types) —
+    # ikinci bir kopya tutmak drift'e yol açar (örn. INDEX/CONSTRAINT). YAML'deki
+    # değerler bu varsayılanların üzerine deep-merge edilir; bilinmeyen anahtarlar
+    # da korunur (sessizce düşürülmez), büyük/küçük harf normalize edilir.
+    default_types = GenerateScriptsConfig().types
+    types_raw = {str(k).upper(): v for k, v in (raw.get("types", {}) or {}).items()}
+    merged = dict(default_types)
+    merged.update(types_raw)
     return GenerateScriptsConfig(
         enabled=raw.get("enabled", False),
         output_dir=raw.get("output_dir", "./ddl_output"),

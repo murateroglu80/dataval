@@ -332,24 +332,38 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
     missing: dict[str, list[str]] = {}
     # NOT-SYNC sequence'ler → hizalayıcı ALTER üretilir (eksik değil, farklı)
     not_sync_sequences: list[str] = []
+    # Eksik constraint'ler → (tablo, label, imza). object_type="CONSTRAINT(PK|UK|FK|CHECK)",
+    # object_name=tablo, source_value=yapısal imza (constraints.py adı bilinçli atar).
+    missing_constraints: list[tuple] = []
     for sm in summaries:
         for r in sm.results:
+            obj_type = (r.object_type or "").upper()
             if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
-                obj_type = (r.object_type or "").upper()
+                if obj_type.startswith("CONSTRAINT("):
+                    label = obj_type[len("CONSTRAINT("):-1]  # PK / UK / FK / CHECK
+                    spec = (r.object_name, label, r.source_value or "")
+                    if spec not in missing_constraints:
+                        missing_constraints.append(spec)
+                    continue
                 if obj_type not in missing:
                     missing[obj_type] = []
                 if r.object_name not in missing[obj_type]:
                     missing[obj_type].append(r.object_name)
-            elif r.status == Status.NOT_SYNC and (r.object_type or "").upper() == "SEQUENCE":
+            elif r.status == Status.NOT_SYNC and obj_type == "SEQUENCE":
                 if r.object_name not in not_sync_sequences:
                     not_sync_sequences.append(r.object_name)
 
-    if not any(missing.values()) and not not_sync_sequences:
+    if not any(missing.values()) and not not_sync_sequences and not missing_constraints:
         console.print("[dim]  ℹ️  Generate scripts: eksik/NOT-SYNC obje bulunamadı.[/]")
         return
 
     total_missing = sum(len(v) for v in missing.values())
-    extra = f" + {len(not_sync_sequences)} NOT-SYNC sequence" if not_sync_sequences else ""
+    extras = []
+    if not_sync_sequences:
+        extras.append(f"{len(not_sync_sequences)} NOT-SYNC sequence")
+    if missing_constraints:
+        extras.append(f"{len(missing_constraints)} eksik constraint")
+    extra = (" + " + " + ".join(extras)) if extras else ""
     console.rule(f"[bold cyan]DDL Script Üretimi[/] — {total_missing} eksik obje{extra}")
     console.print(f"  Çıktı klasörü: [cyan]{gs_cfg.output_dir}[/]")
     console.print()
@@ -362,6 +376,7 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
         cfg=gs_cfg,
         console=console,
         not_sync_sequences=not_sync_sequences,
+        missing_constraints=missing_constraints,
     )
 
     console.print()
