@@ -314,7 +314,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             # ----------------------------------------------------------
             if cfg.generate_scripts.enabled:
                 _run_generate_scripts(
-                    src_conn, all_summaries, mapping, cfg
+                    src_conn, tgt_conn, all_summaries, mapping, cfg
                 )
 
     # ------------------------------------------------------------------
@@ -327,12 +327,14 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 # Yardımcı print fonksiyonları
 # ---------------------------------------------------------------------------
 
-def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
+def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg):
     """Validation sonuçlarından eksik objeleri toplayıp DDL dosyaları üretir."""
     from validator.modules.ddl_generator import generate_scripts
     from validator.result import Status
 
     gs_cfg = cfg.generate_scripts
+    # CONSTRAINT üretimi de modules.constraint_types filtresine uyar (tek kaynak).
+    allowed_cons = getattr(cfg.modules, "constraint_types", None) or {"PK", "UK", "FK", "CHECK"}
 
     # FAILED sonuçlarından eksik objeleri topla
     # "eksik" = source'da var, target'ta yok → target_value boş
@@ -348,6 +350,8 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
             if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
                 if obj_type.startswith("CONSTRAINT("):
                     label = obj_type[len("CONSTRAINT("):-1]  # PK / UK / FK / CHECK
+                    if label not in allowed_cons:
+                        continue
                     spec = (r.object_name, label, r.source_value or "")
                     if spec not in missing_constraints:
                         missing_constraints.append(spec)
@@ -384,6 +388,7 @@ def _run_generate_scripts(src_conn, summaries: list, mapping, cfg):
         console=console,
         not_sync_sequences=not_sync_sequences,
         missing_constraints=missing_constraints,
+        target_conn=tgt_conn,
     )
 
     console.print()

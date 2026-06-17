@@ -5,6 +5,27 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.9.0] - 2026-06-18
+
+### Eklenenler
+- **Pseudo-constraint farkındalığı (semantic constraint validation).** Target tekliği bir
+  **UNIQUE INDEX (+ NOT NULL)** ile sağlanıyorsa (legacy pseudo-PK/UK), ilgili constraint artık
+  yanlışlıkla `FAILED` değil **NOT-SYNC** olarak raporlanır (`enforce: CONSTRAINT → UNIQUE INDEX`).
+  Target unique index'ler + `NOT NULL` kolon bilgisinden türetilir.
+- **`constraint_types` filtre parametresi.** `modules.constraint_types: ALL` veya alt küme
+  (`[PK, UK, FK, CHECK]`) — hem doğrulama hem DDL üretimi tek kaynaktan bu filtreye uyar.
+- **Conflict-safe CONSTRAINT DDL üretimi.** Eksik PK/UK için DDL üretmeden önce target **probe**
+  edilir (yalnız SELECT): aynı kolonlarda covering unique index varsa
+  `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX <ix>` üretilir (**ORA-02261 önlenir**); aynı
+  kolonda zaten constraint varsa DDL yerine `-- Zaten mevcut … atlandı` yorumu yazılır.
+
+### Değiştirilenler
+- **Constraint eşleştirmesi tamamen isim-bağımsız + granüler.** Anahtar `(tip, kolon kümesi
+  [, ref tablo / CHECK koşulu])`; eşleşen çiftlerde ad / durum / `delete_rule` / kolon sırası
+  farkları granüler `diffs` ile **NOT-SYNC** raporlanır, birebir eşleşme **SYNC**.
+- **`SYS_%` isimli constraint'ler artık atlanmıyor** (kolon-bazlı eşleştirmede ad önemsiz);
+  ad farkı yalnız kullanıcı-adlı constraint'lerde raporlanır (iki taraf da `SYS_` ise gürültü yok).
+
 ## [0.8.0] - 2026-06-18
 
 ### Eklenenler
@@ -213,6 +234,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.9.0]: https://github.com/murateroglu80/dataval/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/murateroglu80/dataval/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/murateroglu80/dataval/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/murateroglu80/dataval/compare/v0.6.1...v0.6.2
