@@ -502,26 +502,22 @@ def _get_constraint_ddls(conn, source_schema: str, target_schema: str,
 
 
 # ---------------------------------------------------------------------------
-# GRANT üretimi — ALL_TAB_PRIVS
+# GRANT üretimi — object privilege'ler (fetch grants.py ile paylaşılır)
 # ---------------------------------------------------------------------------
 def _get_grant_statements(conn, schema: str, target_schema: str,
                           replace_schema: bool) -> list[str]:
     """
     Source schema üzerindeki object grant'larını GRANT ifadesi olarak döndürür.
     Örn: GRANT SELECT ON TARGET_SCHEMA.TABLE_NAME TO APP_USER
+
+    Veri, grants modülünün `fetch_object_grants`'ı ile çekilir → DBA_TAB_PRIVS
+    tercih edilir (tam görünürlük), erişim yoksa ALL_TAB_PRIVS'e düşülür.
     """
-    sql = """
-        SELECT GRANTEE, TABLE_NAME, PRIVILEGE,
-               GRANTABLE, HIERARCHY
-          FROM ALL_TAB_PRIVS
-         WHERE TABLE_SCHEMA = :schema
-           AND GRANTEE NOT IN (
-               'SYS','SYSTEM','PUBLIC','WMSYS','XDB',
-               'DBSNMP','APPQOSSYS','ORACLE_OCM'
-           )
-         ORDER BY TABLE_NAME, PRIVILEGE, GRANTEE
-    """
-    rows = fetch_all(conn, sql, {"schema": schema})
+    from validator.modules.grants import fetch_object_grants
+    rows = sorted(
+        fetch_object_grants(conn, schema),
+        key=lambda r: (r["table_name"], r["privilege"], r["grantee"]),
+    )
     stmts = []
     eff_schema = target_schema if replace_schema else schema
     for r in rows:

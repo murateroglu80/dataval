@@ -5,6 +5,26 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.8.0] - 2026-06-18
+
+### Eklenenler
+- **Grants (object privilege) doğrulama modülü.** Yeni `validator/modules/grants.py` source ↔ target
+  object grant'larını `(grantee, obje, privilege)` anahtarıyla karşılaştırır:
+  source'ta var/target'ta yok → **FAILED**; target'ta fazla → **extra** (`extra_as`'a göre
+  NOT-SYNC/SYNC); ortak ama `GRANTABLE`/`HIERARCHY` farkı → **NOT-SYNC**; birebir → **SYNC**.
+  `modules.grants` (veya `--modules grants`) ile açılır (opt-in).
+
+### Düzeltilenler
+- **Grant verisi eksik çekiliyordu (`ALL_TAB_PRIVS` görünürlük sınırı).** Yeni
+  `fetch_object_grants` önce **`DBA_TAB_PRIVS`** (tam görünürlük) dener, erişim yoksa
+  (`ORA-00942`/`ORA-01031`) **`ALL_TAB_PRIVS`**'e düşer. Hem yeni doğrulama modülü hem
+  `ddl_generator` grant üretimi bu tek fetch katmanını paylaşır → başka kullanıcıların verdiği
+  grant'lar artık kaçmıyor.
+- **`modules.grants` orphan flag'i decouple edildi.** Bayrak `config_loader`'da parse ediliyordu
+  ama hiçbir router tarafından tüketilmiyordu (işlevsizdi); artık grants doğrulama modülünü
+  yönlendiriyor. Sequence/diğer üretim akışlarının grant bayrağına gerçek/algılanan bir bağımlılığı
+  yok — modüler izolasyon `docs/refactor-grants-decoupling-plan.md`'de belgelendi.
+
 ## [0.7.0] - 2026-06-18
 
 ### Eklenenler
@@ -193,6 +213,7 @@ ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 - Akıllı satır sayım stratejileri: `auto` / `exact` / `sample` / `stats` / `skip`.
 - `rich` tabanlı terminal raporu ve modül-bazlı özet.
 
+[0.8.0]: https://github.com/murateroglu80/dataval/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/murateroglu80/dataval/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/murateroglu80/dataval/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/murateroglu80/dataval/compare/v0.6.0...v0.6.1

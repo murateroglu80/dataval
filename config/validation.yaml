@@ -12,7 +12,8 @@ modules:
   indexes: true
   constraints: true
   sequences: true
-  grants: false
+  grants: false                 # object privilege (yetki) karşılaştırması (src↔tgt);
+                                # DBA_TAB_PRIVS tercih + ALL_TAB_PRIVS fallback. Opt-in.
   # Global Temporary Table'ları (all_tables.temporary='Y') kapsa.
   # Default false → GTT'ler tables ve constraints'te atlanır (migration gürültüsü).
   include_temp_tables: false

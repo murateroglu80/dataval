@@ -32,7 +32,7 @@ reporter: Reporter | None = None
 @click.option("--target-schema", "-t", multiple=True,
               help="Hedef schema adı (--source-schema ile birebir eşleşmeli)")
 @click.option("--modules", "-m", default=None,
-              help="Virgülle ayrılmış modül listesi: inventory,tables,indexes,constraints,sequences,code,row_counts")
+              help="Virgülle ayrılmış modül listesi: inventory,tables,indexes,constraints,sequences,grants,code,row_counts")
 @click.option("--count-mode", default=None,
               type=click.Choice(["auto", "exact", "sample", "stats", "skip"]),
               help="Row count modu (config'i override eder)")
@@ -158,6 +158,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         if mc.indexes:             active_modules.add("indexes")
         if mc.constraints:         active_modules.add("constraints")
         if mc.sequences:           active_modules.add("sequences")
+        if mc.grants:              active_modules.add("grants")
         if mc.code_objects_enabled: active_modules.add("code")
         # row_counts ayrıca -- her zaman tables modülüne eşlik eder
         # veya açıkça belirtilirse çalışır
@@ -282,6 +283,12 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             if "code" in active_modules:
                 from validator.modules.code_objects import run as run_code
                 summary = run_code(src_conn, tgt_conn, mapping, cfg)
+                reporter.render_module(summary)
+                all_summaries.append(summary)
+
+            if "grants" in active_modules:
+                from validator.modules.grants import run as run_grants
+                summary = run_grants(src_conn, tgt_conn, mapping, cfg)
                 reporter.render_module(summary)
                 all_summaries.append(summary)
 
