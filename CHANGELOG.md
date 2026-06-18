@@ -5,6 +5,25 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.12.0] - 2026-06-18
+
+### Eklenenler
+- **NOT-SYNC kolon remediation — `ALTER TABLE … MODIFY` üretimi.** `tables` modülünün
+  tespit ettiği veri tipi/boyut ve nullable farkları artık hizalayıcı DDL'e dönüşüyor.
+  Yeni `<TARGET>_TABLE_ALTER.sql` dosyası (NOT-SYNC sequence/constraint akışıyla simetrik):
+  - **Tip/boyut + nullable** farkları için tek MODIFY ifadesi; tablo başına gruplanır.
+    Default-değer farkı raporlanır ama MODIFY üretilmez (kapsam dışı).
+  - **Risk yönetimi:** güvenli yön (genişletme, `NOT NULL→NULL` gevşetme) **çalıştırılabilir**;
+    riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL` sıkılaştırma) `--` ile
+    **yorumlanır** + neden (ORA-01441/01439/01440/02296). Bir kolonda herhangi bir parça riskliyse
+    tüm ifade yorumlanır (muhafazakâr).
+  - **Yeni SQL yok** — tüm veri validation sonuçlarından (`ValidationResult`) gelir; source
+    read-only korunur.
+  - **Execution Guard:** yeni `generate_scripts.types.TABLE` anahtarı (default `true`) + `tables`
+    modülü açık olmalı.
+- **CHAR/BYTE notu:** tip imzası CHAR/BYTE semantiğini taşımaz (`_normalize_type` sınırı) — dosya
+  başı notu uygulamadan önce doğrulama uyarısı verir.
+
 ## [0.11.1] - 2026-06-18
 
 ### Düzeltmeler

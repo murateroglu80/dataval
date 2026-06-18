@@ -633,6 +633,7 @@ def generate_scripts(
     console=None,                             # rich Console (opsiyonel)
     not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
     missing_constraints: Optional[list] = None,      # [(table, label, source_value), ...]
+    not_sync_columns: Optional[list] = None,         # NOT-SYNC kolon farkları → ALTER MODIFY
     target_conn=None,                                # CONSTRAINT conflict probe (yalnız SELECT)
     enabled_modules: Optional[set] = None,           # Execution Guard: açık validation modülleri
 ) -> list[str]:
@@ -760,6 +761,14 @@ def generate_scripts(
                 + ")"
             )
 
+    # NOT-SYNC kolon remediation (ALTER TABLE ... MODIFY) — TABLE tipi açıksa, tables
+    # modülü açıksa. Riskli yön (küçültme/base-tip/NOT NULL) yorumlu üretilir.
+    if not_sync_columns and cfg.types.get("TABLE", True) and _module_on("tables"):
+        _write_column_alter_file(
+            source_conn, source_schema, target_schema, not_sync_columns,
+            cfg, output_dir, generated_at, created_files, console,
+        )
+
     # NOT-SYNC sequence remediation (ALTER) — SEQUENCE tipi açıksa ve modül açıksa
     if not_sync_sequences and cfg.types.get("SEQUENCE", False) and _module_on("sequences"):
         _write_sequence_alter_file(
@@ -817,6 +826,138 @@ def _write_sequence_alter_file(source_conn, source_schema, target_schema, seq_na
         console.print(
             f"  [green]✅[/green] {filename}  "
             f"([cyan]{written}[/cyan] NOT-SYNC sequence → ALTER)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# NOT-SYNC kolon → ALTER TABLE ... MODIFY dosyası
+#
+# Veri zaten tables modülünün ValidationResult'ından gelir (yeni SQL yok). Riskli
+# yön (boyut küçültme / base-tip değişimi / NULL→NOT NULL) yorumlu üretilir; güvenli
+# yön (genişletme / NOT NULL→NULL gevşetme) çalıştırılabilir. CHAR/BYTE semantiği
+# imzada taşınmaz (mevcut _normalize_type sınırı) — dosya başı notu uyarır.
+# ---------------------------------------------------------------------------
+
+def _parse_sig(sig: str) -> tuple:
+    """'NVARCHAR2(300)' → ('NVARCHAR2', [300]); 'NUMBER(10,2)' → ('NUMBER', [10,2]).
+
+    Parantez yoksa ('CLOB', []). Yalnız risk heuristiği için — DDL doğruluğunu
+    etkilemez; ayrıştırılamayan parça sessizce boş sayı listesine düşer.
+    """
+    s = (sig or "").strip().upper()
+    m = re.match(r"^([A-Z0-9_ ]+?)\s*(?:\(([^)]*)\))?$", s)
+    if not m:
+        return s, []
+    base = m.group(1).strip()
+    nums = []
+    if m.group(2):
+        for part in m.group(2).split(","):
+            part = part.strip()
+            try:
+                nums.append(int(part))
+            except ValueError:
+                pass
+    return base, nums
+
+
+def _classify_column_risk(src_sig, tgt_sig, has_tip, src_null, tgt_null) -> tuple:
+    """(risky: bool, reasons: list[str]) döner. Herhangi bir parça riskliyse risky=True."""
+    reasons: list[str] = []
+
+    if has_tip:
+        s_base, s_nums = _parse_sig(src_sig)
+        t_base, t_nums = _parse_sig(tgt_sig)
+        if s_base != t_base:
+            reasons.append(
+                f"base tip değişimi {tgt_sig}→{src_sig} — mevcut veri reddedilebilir "
+                "(ORA-01439/01440)"
+            )
+        else:
+            # Aynı base: herhangi bir konumda kaynak < hedef ise küçültme (veri kaybı).
+            shrink = any(
+                s < t for s, t in zip(s_nums, t_nums)
+            ) or (len(t_nums) > len(s_nums))
+            if shrink:
+                reasons.append(
+                    f"boyut küçültme {tgt_sig}→{src_sig} — veri kaybı / ORA-01441"
+                )
+
+    # nullable: 'N'=NOT NULL, 'Y'=NULL. Hedefi NULL'dan NOT NULL'a sıkılaştırmak riskli.
+    if src_null is not None and tgt_null is not None and src_null != tgt_null:
+        if src_null == "N" and tgt_null == "Y":
+            reasons.append("NULL→NOT NULL — mevcut NULL satırlar ORA-02296")
+
+    return (len(reasons) > 0), reasons
+
+
+def _build_column_modify(eff_schema, table, column, src_sig, has_tip, src_null, tgt_null) -> str:
+    """ALTER TABLE "S"."T" MODIFY ("C" <tip?> <NULL|NOT NULL?>); ifadesini kurar."""
+    parts = []
+    if has_tip and src_sig:
+        parts.append(src_sig)
+    if src_null is not None and tgt_null is not None and src_null != tgt_null:
+        parts.append("NOT NULL" if src_null == "N" else "NULL")
+    inner = " ".join(parts)
+    return f'ALTER TABLE "{eff_schema}"."{table}" MODIFY ("{column}" {inner});'
+
+
+def _write_column_alter_file(source_conn, source_schema, target_schema, columns,
+                             cfg, output_dir, generated_at, created_files, console):
+    """NOT-SYNC kolonlar için hizalayıcı ALTER TABLE ... MODIFY script'i yazar.
+
+    `columns`: [(table, column, src_sig, tgt_sig, has_tip, src_null, tgt_null), ...].
+    Riskli ifadeler `-- ` ile yorumlanır + neden satırı. Tabloya göre gruplanır.
+    """
+    eff_schema = target_schema if cfg.replace_schema else source_schema
+
+    # Tabloya göre grupla (okunur çıktı)
+    by_table: dict[str, list] = {}
+    for rec in columns:
+        by_table.setdefault(rec[0], []).append(rec)
+
+    blocks = []
+    written = 0
+    risky_count = 0
+    for table in sorted(by_table):
+        col_recs = sorted(by_table[table], key=lambda r: r[1])
+        blocks.append(_object_header(table, "NOT-SYNC", "kolon hizalama (ALTER MODIFY)"))
+        for (_t, column, src_sig, tgt_sig, has_tip, src_null, tgt_null) in col_recs:
+            stmt = _build_column_modify(eff_schema, table, column, src_sig,
+                                        has_tip, src_null, tgt_null)
+            risky, reasons = _classify_column_risk(src_sig, tgt_sig, has_tip,
+                                                   src_null, tgt_null)
+            if risky:
+                risky_count += 1
+                blocks.append(f"-- ⚠️ RİSK ({column}): " + "; ".join(reasons) + "\n")
+                blocks.append("-- Doğrulayıp elle açın:\n")
+                blocks.append(f"-- {stmt}\n")
+            else:
+                blocks.append(stmt + "\n")
+            written += 1
+        blocks.append("")
+
+    if written == 0:
+        return
+
+    note = ("Riskli (yorumlu) ifadeler ve CHAR/BYTE semantiği uygulamadan önce "
+            "doğrulanmalıdır.")
+    filename = f"{target_schema}_TABLE_ALTER.sql"
+    filepath = output_dir / filename
+    content = (
+        _file_header(target_schema, "TABLE (ALTER / NOT-SYNC kolon)", generated_at)
+        + f"-- NOT: {note}\n\n"
+        + "\n".join(blocks) + "\n"
+    )
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    created_files.append(str(filepath))
+    if console:
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{written}[/cyan] NOT-SYNC kolon → MODIFY"
+            + (f", [yellow]{risky_count} riskli-yorumlu[/yellow]" if risky_count else "")
+            + ")"
         )
 
 
