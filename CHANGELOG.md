@@ -5,6 +5,18 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.11.1] - 2026-06-18
+
+### Düzeltmeler
+- **Global-only koşuda config çökmesi.** `validation.yaml`'de boş `schemas:` bloğu (boş
+  `source:`/`target:`) `None` üretip `s["source"].upper()`'da `'NoneType' object has no
+  attribute 'upper'` hatası veriyordu. Şema parse'ı artık tamamen boş placeholder satırlarını
+  **atlıyor** (yalnız `users` gibi global modüllerle şema gerektirmeyen koşuya izin); yarım dolu
+  mapping (yalnız source ya da yalnız target) için net hata verir. Boş schemas için hard `raise`
+  kaldırıldı.
+- **Scoped modül + boş schemas uyarısı.** Şema-bağımlı bir modül (tables/indexes/…) aktifken hiç
+  schema mapping yoksa, sessizce atlamak yerine `run.py` artık sarı uyarı basar.
+
 ## [0.11.0] - 2026-06-18
 
 ### Eklenenler

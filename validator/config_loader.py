@@ -291,12 +291,21 @@ def load_config(
     with open(base / validation_path, encoding="utf-8") as f:
         val_raw = yaml.safe_load(f)
 
-    schemas = [
-        SchemaMapping(source=s["source"].upper(), target=s["target"].upper())
-        for s in val_raw.get("schemas", [])
-    ]
-    if not schemas:
-        raise ValueError("validation.yaml icinde en az bir schema mapping tanimlanmali.")
+    # Boş/yarım mapping'ler atlanır: global-only koşu (ör. yalnız `users`) şema
+    # gerektirmez, bu yüzden boş `schemas:` bloğu hata değildir. Scoped modül + boş
+    # schemas durumunun uyarısı run.py'de verilir.
+    schemas = []
+    for s in val_raw.get("schemas", []) or []:
+        src = (s.get("source") or "").strip()
+        tgt = (s.get("target") or "").strip()
+        if not src and not tgt:
+            continue  # tamamen boş placeholder satırı
+        if not src or not tgt:
+            raise ValueError(
+                "Schema mapping'te source ve target birlikte verilmeli "
+                f"(eksik: source={src!r}, target={tgt!r})."
+            )
+        schemas.append(SchemaMapping(source=src.upper(), target=tgt.upper()))
 
     source = _parse_connection(conn_raw["source"], is_source=True)
     target = _parse_connection(conn_raw["target"], is_source=False)

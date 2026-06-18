@@ -245,6 +245,13 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
     # Schema döngüsü — yalnız schema-scoped modül varsa VE schema mapping varsa.
     # (--modules users → buraya hiç girilmez; tek bir tablo/index taranmaz.)
     # ------------------------------------------------------------------
+    if scoped_active and not cfg.schemas:
+        console.print(
+            "[yellow]⚠️  Şema-bağımlı modüller aktif "
+            f"({', '.join(sorted(scoped_active))}) ama validation.yaml'de schema "
+            "mapping yok — bu modüller atlanıyor. (source/target dolu bir mapping "
+            "ekleyin.)[/]"
+        )
     if scoped_active and cfg.schemas:
       for mapping in cfg.schemas:
         console.rule(f"[bold]Schema: {mapping.source} → {mapping.target}[/]")
