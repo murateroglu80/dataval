@@ -90,6 +90,8 @@ generate_scripts:
     INDEX:     true             # eksik index'ler (ALL_INDEXES native)
     CONSTRAINT: true            # eksik PK/UK/FK/CHECK (ALTER TABLE ADD; PK/UK→FK sıralı)
     GRANT:     true             # source schema üzerindeki object grant'ları
+    TABLE:     true             # NOT-SYNC kolon farkları → ALTER TABLE ... MODIFY
+                                #   (riskli yön: küçültme/base-tip/NOT NULL → yorumlu üretilir)
 
 ignore_differences:
   lob_storage: true        # BASICFILE vs SECUREFILE — WARNING değil, ignore

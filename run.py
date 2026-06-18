@@ -425,6 +425,9 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
     missing: dict[str, list[str]] = {}
     # NOT-SYNC sequence'ler → hizalayıcı ALTER üretilir (eksik değil, farklı)
     not_sync_sequences: list[str] = []
+    # NOT-SYNC kolonlar → ALTER TABLE ... MODIFY (tip/boyut + nullable). Yalnız-default
+    # farkı kapsam dışı. Kayıt: (table, column, src_sig, tgt_sig, has_tip, src_null, tgt_null).
+    not_sync_columns: list[tuple] = []
     # Eksik constraint'ler → (tablo, label, imza). object_type="CONSTRAINT(PK|UK|FK|CHECK)",
     # object_name=tablo, source_value=yapısal imza (constraints.py adı bilinçli atar).
     missing_constraints: list[tuple] = []
@@ -452,8 +455,20 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
             elif r.status == Status.NOT_SYNC and obj_type == "SEQUENCE":
                 if r.object_name not in not_sync_sequences:
                     not_sync_sequences.append(r.object_name)
+            elif r.status == Status.NOT_SYNC and obj_type == "COLUMN":
+                diffs = r.diffs or []
+                has_tip = any(d[0] == "tip" for d in diffs)
+                nz = next((d for d in diffs if d[0] == "nullable"), None)
+                if not has_tip and not nz:
+                    continue  # yalnız-default farkı → kapsam dışı
+                table, _, column = r.object_name.partition(".")
+                not_sync_columns.append((
+                    table, column, r.source_value, r.target_value,
+                    has_tip, (nz[1] if nz else None), (nz[2] if nz else None),
+                ))
 
-    if not any(missing.values()) and not not_sync_sequences and not missing_constraints:
+    if (not any(missing.values()) and not not_sync_sequences
+            and not missing_constraints and not not_sync_columns):
         console.print("[dim]  ℹ️  Generate scripts: eksik/NOT-SYNC obje bulunamadı.[/]")
         return
 
@@ -461,6 +476,8 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
     extras = []
     if not_sync_sequences:
         extras.append(f"{len(not_sync_sequences)} NOT-SYNC sequence")
+    if not_sync_columns:
+        extras.append(f"{len(not_sync_columns)} NOT-SYNC kolon")
     if missing_constraints:
         extras.append(f"{len(missing_constraints)} eksik constraint")
     extra = (" + " + " + ".join(extras)) if extras else ""
@@ -477,6 +494,7 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
         console=console,
         not_sync_sequences=not_sync_sequences,
         missing_constraints=missing_constraints,
+        not_sync_columns=not_sync_columns,
         target_conn=tgt_conn,
         enabled_modules=enabled_modules,
     )

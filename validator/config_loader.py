@@ -132,6 +132,9 @@ class GenerateScriptsConfig:
         "INDEX":        True,
         "CONSTRAINT":   True,
         "GRANT":        True,
+        # NOT-SYNC kolon farkları için ALTER TABLE ... MODIFY üretimi (tables modülü).
+        # Riskli yön (küçültme/base-tip/NOT NULL) yorumlu üretilir. Default açık.
+        "TABLE":        True,
     })
 
 
