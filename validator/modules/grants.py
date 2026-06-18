@@ -54,6 +54,20 @@ def fetch_object_grants(conn, schema: str) -> list[dict]:
         raise
 
 
+def missing_grant_rows(
+    src_conn, tgt_conn, src_schema: str, tgt_schema: str
+) -> list[dict]:
+    """
+    Yalnız **eksik** grant'ların kaynak satırlarını döndürür: source'ta olup
+    target'ta olmayan (anahtar = grantee+obje+privilege). Generation bu listeyi
+    kullanır → SYNC/extra grant'lar asla script'e girmez (FAILED-only sözleşmesi).
+    Her iki taraf da yalnız SELECT ile okunur; source asla yazılmaz.
+    """
+    src_rows = fetch_object_grants(src_conn, src_schema)
+    tgt_keys = {_key(r) for r in fetch_object_grants(tgt_conn, tgt_schema)}
+    return [r for r in src_rows if _key(r) not in tgt_keys]
+
+
 def _key(r: dict) -> tuple:
     """Bir grant'ı benzersiz kılan anahtar: (grantee, obje, privilege)."""
     return (r["grantee"], r["table_name"], r["privilege"])

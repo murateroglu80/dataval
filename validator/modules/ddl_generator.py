@@ -49,6 +49,16 @@ AUTO_BODY_TYPES = {
     "TYPE":    "TYPE BODY",
 }
 
+# Execution Guard — üretim tipini sahiplenen validation modülü. `modules.X=false` ise
+# o modülün sahiplendiği tip ASLA üretilmez. Yalnız sahibi tek ve net olan tipler
+# burada; PL/SQL ve SYNONYM eksikliği inventory'den gelir (tek sahip yok) → guard'sız.
+TYPE_MODULE = {
+    "GRANT":      "grants",
+    "CONSTRAINT": "constraints",
+    "SEQUENCE":   "sequences",
+    "INDEX":      "indexes",
+}
+
 
 # ---------------------------------------------------------------------------
 # SQL*Plus dosya başlığı
@@ -566,18 +576,18 @@ def _get_constraint_ddls(conn, source_schema: str, target_schema: str,
 # ---------------------------------------------------------------------------
 # GRANT üretimi — object privilege'ler (fetch grants.py ile paylaşılır)
 # ---------------------------------------------------------------------------
-def _get_grant_statements(conn, schema: str, target_schema: str,
+def _get_grant_statements(source_conn, target_conn, schema: str, target_schema: str,
                           replace_schema: bool) -> list[str]:
     """
-    Source schema üzerindeki object grant'larını GRANT ifadesi olarak döndürür.
-    Örn: GRANT SELECT ON TARGET_SCHEMA.TABLE_NAME TO APP_USER
+    Yalnız **eksik** (source'ta var, target'ta yok) object grant'larını GRANT
+    ifadesi olarak döndürür. Örn: GRANT SELECT ON TARGET_SCHEMA.TABLE_NAME TO APP_USER
 
-    Veri, grants modülünün `fetch_object_grants`'ı ile çekilir → DBA_TAB_PRIVS
-    tercih edilir (tam görünürlük), erişim yoksa ALL_TAB_PRIVS'e düşülür.
+    FAILED-only sözleşmesi: target'ta zaten mevcut (SYNC) grant'lar ASLA üretilmez.
+    Diff `grants.missing_grant_rows` ile yapılır (her iki taraf da yalnız SELECT).
     """
-    from validator.modules.grants import fetch_object_grants
+    from validator.modules.grants import missing_grant_rows
     rows = sorted(
-        fetch_object_grants(conn, schema),
+        missing_grant_rows(source_conn, target_conn, schema, target_schema),
         key=lambda r: (r["table_name"], r["privilege"], r["grantee"]),
     )
     stmts = []
@@ -624,14 +634,23 @@ def generate_scripts(
     not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
     missing_constraints: Optional[list] = None,      # [(table, label, source_value), ...]
     target_conn=None,                                # CONSTRAINT conflict probe (yalnız SELECT)
+    enabled_modules: Optional[set] = None,           # Execution Guard: açık validation modülleri
 ) -> list[str]:
     """
     Eksik objelerin DDL scriptlerini output_dir altına yazar. Ayrıca NOT-SYNC
     sequence'ler için (SEQUENCE tipi açıkken) hizalayıcı ALTER script'i üretir.
     Döndürür: oluşturulan dosyaların listesi.
+
+    Execution Guard: `enabled_modules` verildiğinde, bir üretim tipi yalnızca onu
+    sahiplenen validation modülü açıksa üretilir (`modules.X=false` ⇒ X için DDL yok).
+    `enabled_modules=None` → guard kapalı (geriye dönük uyum).
     """
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _module_on(name: str) -> bool:
+        # Guard kapalıysa (None) izin ver; aksi halde sahibi modül açık olmalı.
+        return enabled_modules is None or name in enabled_modules
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     created_files: list[str] = []
@@ -639,6 +658,10 @@ def generate_scripts(
     # Hangi tipleri işleyeceğiz? (PACKAGE seçilince BODY da otomatik)
     active_types: list[str] = []
     for t in APPLY_ORDER:
+        # Execution Guard: sahibi modül kapalıysa tip hiç işlenmez.
+        owner = TYPE_MODULE.get(t)
+        if owner and not _module_on(owner):
+            continue
         if t == "GRANT":
             if cfg.types.get("GRANT", True):
                 active_types.append("GRANT")
@@ -661,7 +684,7 @@ def generate_scripts(
         if obj_type == "GRANT":
             _write_grant_file(
                 source_conn, source_schema, target_schema, cfg,
-                output_dir, generated_at, created_files, console,
+                output_dir, generated_at, created_files, console, target_conn,
             )
             continue
 
@@ -737,15 +760,15 @@ def generate_scripts(
                 + ")"
             )
 
-    # NOT-SYNC sequence remediation (ALTER) — SEQUENCE tipi açıksa
-    if not_sync_sequences and (cfg.types.get("SEQUENCE", False)):
+    # NOT-SYNC sequence remediation (ALTER) — SEQUENCE tipi açıksa ve modül açıksa
+    if not_sync_sequences and cfg.types.get("SEQUENCE", False) and _module_on("sequences"):
         _write_sequence_alter_file(
             source_conn, source_schema, target_schema, sorted(set(not_sync_sequences)),
             cfg, output_dir, generated_at, created_files, console,
         )
 
-    # CONSTRAINT (PK/UK/FK/CHECK) — CONSTRAINT tipi açıksa
-    if missing_constraints and cfg.types.get("CONSTRAINT", True):
+    # CONSTRAINT (PK/UK/FK/CHECK) — CONSTRAINT tipi açıksa ve modül açıksa
+    if missing_constraints and cfg.types.get("CONSTRAINT", True) and _module_on("constraints"):
         _write_constraint_file(
             source_conn, source_schema, target_schema, missing_constraints,
             cfg, output_dir, generated_at, created_files, console, target_conn,
@@ -831,9 +854,12 @@ def _write_constraint_file(source_conn, source_schema, target_schema, specs,
 # GRANT dosyası
 # ---------------------------------------------------------------------------
 def _write_grant_file(source_conn, source_schema, target_schema, cfg,
-                      output_dir, generated_at, created_files, console):
+                      output_dir, generated_at, created_files, console, target_conn=None):
+    # Target diff'i olmadan eksik grant hesaplanamaz → güvenli tarafta, üretme.
+    if target_conn is None:
+        return
     stmts = _get_grant_statements(
-        source_conn, source_schema, target_schema, cfg.replace_schema
+        source_conn, target_conn, source_schema, target_schema, cfg.replace_schema
     )
     if not stmts:
         return
@@ -841,7 +867,7 @@ def _write_grant_file(source_conn, source_schema, target_schema, cfg,
     filename = f"{target_schema}_GRANT.sql"
     filepath  = output_dir / filename
 
-    header = _file_header(target_schema, "GRANT", generated_at)
+    header = _file_header(target_schema, "GRANT (eksik / FAILED)", generated_at)
     content = header + "\n".join(stmts) + "\n"
 
     with open(filepath, "w", encoding="utf-8") as f:
@@ -851,7 +877,7 @@ def _write_grant_file(source_conn, source_schema, target_schema, cfg,
     if console:
         console.print(
             f"  [green]✅[/green] {filename}  "
-            f"([cyan]{len(stmts)}[/cyan] grant)"
+            f"([cyan]{len(stmts)}[/cyan] eksik grant)"
         )
 
 
