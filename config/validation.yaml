@@ -18,6 +18,12 @@ modules:
   users: false                  # instance-wide kullanıcı + sistem/rol/object yetki
                                 # izolasyonu. Sistem user'ları (SYS, APEX_* …) dinamik
                                 # elenir (19c oracle_maintained, 11g statik). Opt-in.
+                                # Şema-bağımsız global akış — schema döngüsünden önce
+                                # bir kez koşar (--modules users → diğer modüller atlanır).
+  password_sync: false          # users + generate ile: 11g→19c parola hash
+                                # (IDENTIFIED BY VALUES) senkronu + ortak user'larda
+                                # parola-farkı NOT-SYNC tespiti. HASSAS — üretilen
+                                # <DB>_USER.sql canlı verifier içerir; bkz README. Opt-in.
   # Global Temporary Table'ları (all_tables.temporary='Y') kapsa.
   # Default false → GTT'ler tables ve constraints'te atlanır (migration gürültüsü).
   include_temp_tables: false

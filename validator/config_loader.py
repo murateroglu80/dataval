@@ -84,6 +84,10 @@ class ModulesConfig:
     grants: bool = False
     # users: instance-wide kullanıcı + sistem/rol/object yetki izolasyonu (opt-in).
     users: bool = False
+    # password_sync: users + generate ile, 11g→19c parola hash (IDENTIFIED BY VALUES)
+    # senkronu + ortak user'larda parola-farkı NOT-SYNC tespiti. HASSAS — yalnız users
+    # açıkken anlamlı; DDL kısmı ayrıca generate_scripts.enabled ister. Default False.
+    password_sync: bool = False
     # include_temp_tables: Global Temporary Table'ları (all_tables.temporary='Y')
     # doğrulama kapsamına alır. Default False → GTT'ler hem tables hem constraints
     # modülünde gürültü yaratmaması için atlanır.
@@ -241,6 +245,7 @@ def _parse_modules(raw: dict) -> ModulesConfig:
         sequences=raw.get("sequences", True),
         grants=raw.get("grants", False),
         users=raw.get("users", False),
+        password_sync=raw.get("password_sync", False),
         include_temp_tables=bool(raw.get("include_temp_tables", False)),
         code_objects_enabled=co.get("enabled", True),
         code_object_types=co.get("types", [

@@ -14,14 +14,19 @@ Statüler:
   - admin_option / default_role farkı                         → NOT-SYNC
   - birebir aynı                                              → SYNC
 
-Tüm sorgular yalnız SELECT'tir — source asla yazılmaz. Parola hash'i HİÇBİR zaman
-okunmaz/loglanmaz (provisioning DDL'i yalnız yorumlu/placeholder üretir).
+Tüm sorgular yalnız SELECT'tir — source asla yazılmaz.
+
+Parola hash'i (verifier) **default'ta okunmaz**. Yalnız `modules.password_sync=true` iken
+ortak user'lar için verifier okunup karşılaştırılır (farklı → NOT-SYNC) ve generation
+sırasında `IDENTIFIED BY VALUES` üretmek için kullanılır. Hash değeri HİÇBİR zaman
+loglanmaz/print edilmez — raporda yalnız maskelenir (`_mask_hash`), yalnız üretilen
+`.sql` dosyasına yazılır.
 """
 
 import oracledb
 from validator.connection import fetch_all
 from validator.result import ValidationResult, ModuleSummary, Status, extra_status
-from validator.config_loader import AppConfig, SchemaMapping
+from validator.config_loader import AppConfig
 
 # 11g + 19c default sistem/altyapı kullanıcıları (oracle_maintained yoksa statik fallback).
 _SYSTEM_USERS = {
@@ -77,6 +82,76 @@ def _non_system_users(conn) -> set[str]:
     view = "dba_users" if mode == "dba" else "all_users"
     rows = fetch_all(conn, f"SELECT username FROM {view}")
     return {r["username"] for r in rows if not _is_system_user(r["username"])}
+
+
+# ---------------------------------------------------------------------------
+# Parola verifier okuma (cross-version) — yalnız password_sync açıkken kullanılır.
+# Hash ASLA loglanmaz/print edilmez; yalnız diff için maskelenir, yalnız generation
+# dosyasına yazılmak üzere döner.
+# ---------------------------------------------------------------------------
+def _verifier_source(conn) -> str:
+    """
+    Verifier'ın nereden okunabileceğini saptar (SELECT probe):
+      'user$' → SYS.USER$ erişimi var (SYS/sysdba/SELECT ON SYS.USER$).
+                11g: password=10g DES, spare4=11g SHA-1; 12c+: spare4='S:…;T:…'.
+      'dba'   → SYS.USER$ yok ama DBA_USERS.PASSWORD okunur (yalnız 11g; 12c+ NULL).
+      'none'  → ikisi de yok → placeholder yolu.
+    """
+    try:
+        fetch_all(conn, "SELECT password, spare4 FROM sys.user$ WHERE ROWNUM = 1")
+        return "user$"
+    except Exception as e:
+        err = str(e)
+        if "ORA-00942" in err or "ORA-01031" in err:
+            try:
+                fetch_all(conn, "SELECT password FROM dba_users WHERE ROWNUM = 1")
+                return "dba"
+            except Exception:
+                return "none"
+        raise
+
+
+def fetch_user_verifier(conn, username: str) -> dict | None:
+    """{'password': <DES|None>, 'spare4': <SHA verifier|None>} döndürür (sürüm-duyarlı).
+    Bulunamazsa None. Dönüş ASLA loglanmaz/print edilmez."""
+    src = _verifier_source(conn)
+    if src == "user$":
+        rows = fetch_all(
+            conn, "SELECT password, spare4 FROM sys.user$ WHERE name = :u",
+            {"u": username},
+        )
+        if rows:
+            return {"password": rows[0].get("password"), "spare4": rows[0].get("spare4")}
+        return None
+    if src == "dba":
+        rows = fetch_all(
+            conn, "SELECT password FROM dba_users WHERE username = :u",
+            {"u": username},
+        )
+        if rows:
+            return {"password": rows[0].get("password"), "spare4": None}
+        return None
+    return None
+
+
+def verifier_value(verifier: dict | None) -> str | None:
+    """IDENTIFIED BY VALUES için kullanılacak verifier string'i: spare4 (varsa) → password."""
+    if not verifier:
+        return None
+    return verifier.get("spare4") or verifier.get("password") or None
+
+
+def _mask_hash(h) -> str:
+    """Hash'i rapora/loga güvenli biçimde maskeler — gerçek değer asla yüzeye çıkmaz."""
+    if not h:
+        return "(yok)"
+    s = str(h)
+    return (s[:6] + "…") if len(s) > 6 else "******"
+
+
+def fetch_user_attrs_one(conn, username: str) -> dict:
+    """Tek bir user'ın DBA_USERS özniteliklerini döndürür (generation için). Yoksa {}."""
+    return _fetch_user_attrs(conn, {username}).get(username, {})
 
 
 # ---------------------------------------------------------------------------
@@ -199,16 +274,29 @@ def _user_attr_diffs(s: dict, t: dict) -> list:
     return diffs
 
 
+def _db_label(conn) -> str:
+    """Instance/DB etiketi (schema-bağımsız sonuçlar için). Erişilemezse 'INSTANCE'."""
+    try:
+        rows = fetch_all(conn, "SELECT name FROM v$database")
+        if rows and rows[0].get("name"):
+            return rows[0]["name"]
+    except Exception:
+        pass
+    return "INSTANCE"
+
+
 def run(
     src_conn: oracledb.Connection,
     tgt_conn: oracledb.Connection,
-    mapping: SchemaMapping,
     cfg: AppConfig,
 ) -> ModuleSummary:
+    """Instance-wide (şema-bağımsız) kullanıcı + yetki karşılaştırması.
+    `cfg.schemas`'a hiç bakmaz; DB seviyesinde bir kez koşar."""
 
     summary = ModuleSummary(module="users")
     extra = extra_status(cfg.output.extra_as)
-    schema = mapping.source
+    # Sonuçların schema etiketi: target DB adı (schema-bağımsız global akış).
+    schema = _db_label(tgt_conn)
 
     # Sistem-user filtresi her iki taraf için ayrı (sürüm farkı olabilir);
     # karşılaştırma her iki tarafın non-system birleşimi üzerinden yürür.
@@ -276,5 +364,21 @@ def run(
             if _yn(s.get("grantable")) != _yn(t.get("grantable")) else []
         ),
     )
+
+    # 5) Parola verifier farkı (yalnız password_sync açıkken — hassas yüzey opt-in).
+    #    Ortak user'larda src/tgt verifier okunur; FARKLIYSA NOT-SYNC (maskeli diff).
+    #    Eşleşiyorsa kayıt eklenmez (mevcut USER existence SYNC'i ile tekrarı önler).
+    #    Hash değeri buraya/loga ASLA yazılmaz — yalnız _mask_hash gösterimi.
+    if getattr(cfg.modules, "password_sync", False):
+        for u in sorted(common):
+            sv = verifier_value(fetch_user_verifier(src_conn, u))
+            tv = verifier_value(fetch_user_verifier(tgt_conn, u))
+            if (sv or "") != (tv or ""):
+                summary.add(ValidationResult(
+                    module="users", schema=schema, object_type="USER",
+                    object_name=u, status=Status.NOT_SYNC,
+                    diffs=[("password", _mask_hash(sv), _mask_hash(tv))],
+                    note="Parola verifier farkı (password_sync)",
+                ))
 
     return summary

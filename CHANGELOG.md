@@ -5,6 +5,38 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.11.0] - 2026-06-18
+
+### Eklenenler
+- **Şema-bağımsız global user akışı + Execution Isolation.** `users` modülü artık schema
+  döngüsünden **önce, döngü dışında bir kez** koşar (`run(src_conn, tgt_conn, cfg)` — `mapping`
+  bağımlılığı kaldırıldı); sonuçların schema etiketi target DB adıdır (`v$database`, erişilemezse
+  `INSTANCE`). Modüller `GLOBAL_MODULES = {"users"}` ile global/scoped olarak ikiye ayrılır:
+  `--modules users` verildiğinde `scoped_active` boş kalır ve **schema döngüsüne hiç girilmez** —
+  `tables`/`indexes`/… flag'leri `true` olsa bile o akışta hiçbir tablo/index taranmaz.
+- **Cross-version parola hash senkronu (`modules.password_sync`, opt-in, default `false`).**
+  - Yeni `users.fetch_user_verifier` / `_verifier_source`: sürüm-duyarlı verifier okuma —
+    `SYS.USER$` (`password`=10g DES, `spare4`=SHA verifier) → erişim yoksa `DBA_USERS.PASSWORD`
+    (yalnız 11g) → ikisi de yoksa placeholder. Probe `ORA-00942/01031` yakalayıp düşer.
+  - **Parola-farkı tespiti:** ortak (iki tarafta var) user'larda verifier farklıysa `USER` için
+    `NOT-SYNC`. Hash değeri rapora/loga **asla** yazılmaz — yalnız maskeli (ilk 6 karakter + `…`).
+  - **Çalıştırılabilir USER DDL'i:** `password_sync=true` + generate ile `<DB>_USER.sql` artık
+    `CREATE USER … IDENTIFIED BY VALUES '<verifier>'` (11g→19c taşıma) + gerçek
+    `DEFAULT TABLESPACE`/`TEMPORARY`/`PROFILE` (`DBA_USERS`) + parola-farkı için
+    `ALTER USER … IDENTIFIED BY VALUES …` + reconstructed `GRANT` üretir. Dosya başında **HASSAS**
+    uyarı bloğu (izinleri kısıtla / commit'leme / uygulama sonrası sil; 19c
+    `SEC_CASE_SENSITIVE_LOGON` / `SQLNET.ALLOWED_LOGON_VERSION_SERVER` notu).
+  - `password_sync=false` (default) → **v0.10.0 ile bire bir aynı** güvenli dry-run: hash hiç
+    okunmaz, tüm satırlar yorumdur, `<<PAROLAYI_BELIRLEYIN>>` placeholder.
+- **USER üretimi global'e taşındı.** `ddl_generator.generate_user_script` (tek `<DB>_USER.sql`)
+  schema döngüsünden önce bir kez üretilir; per-mapping `_write_user_file` çağrısı `generate_scripts`
+  içinden kaldırıldı. Scoped generate, user-family (`USER/SYS_PRIV/ROLE/OBJ_PRIV`) tiplerini toplamaz.
+
+### Güvenlik
+- Parola verifier (hash) **hiçbir koşulda** konsola/log dosyasına yazılmaz; yalnız `password_sync=true`
+  iken üretilen `.sql` dosyasına gider, raporda maskelenir. Source read-only korunur (tüm okuma SELECT).
+  `password_sync=false` (default) hash yüzeyini tamamen kapalı tutar.
+
 ## [0.10.0] - 2026-06-18
 
 ### Eklenenler

@@ -13,7 +13,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Sequence kontrolü** — INCREMENT_BY, MIN/MAX, CACHE, CYCLE parametreleri; LAST_NUMBER toleransı
 - **Kod objeleri** — DDL hash karşılaştırması (whitespace normalize, schema adı soyutlanır)
 - **Grants (yetki) doğrulama** — source ↔ target object privilege karşılaştırması; `DBA_TAB_PRIVS` tercih, `ALL_TAB_PRIVS` fallback; `GRANTABLE`/`HIERARCHY` farkı NOT-SYNC olarak raporlanır (opt-in)
-- **Users (kullanıcı + yetki izolasyonu)** — instance-wide: app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir — parola hash'i okunmaz/loglanmaz (opt-in)
+- **Users (kullanıcı + yetki izolasyonu)** — **şema-bağımsız, instance-wide global** akış (schema döngüsünden önce bir kez koşar, `cfg.schemas`'a bakmaz): app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). `--modules users` → diğer modüller (`tables`/`indexes`/…) `true` olsa bile **atlanır** (Execution Isolation). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir; `password_sync: true` ile **çalıştırılabilir** `CREATE/ALTER USER ... IDENTIFIED BY VALUES`'a (11g→19c verifier taşıma) ve ortak user'larda **parola-farkı NOT-SYNC** tespitine yükseltilir (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT**, GRANT (yalnız eksik) ve **USER** (dry-run/yorumlu) üretilir. Üretim **Execution Guard**'a tabidir: bir tip yalnızca onu sahiplenen validation modülü açıksa üretilir
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
@@ -124,6 +124,9 @@ modules:
   sequences: true
   grants: false            # object privilege karşılaştırması (opt-in; DBA_TAB_PRIVS tercih)
   users: false             # instance-wide kullanıcı + sistem/rol/object yetki izolasyonu (opt-in)
+                           # şema-bağımsız global akış; --modules users → diğer modüller atlanır
+  password_sync: false     # users + generate ile: 11g→19c parola hash (IDENTIFIED BY VALUES)
+                           # senkronu + parola-farkı NOT-SYNC. HASSAS — bkz aşağıdaki not (opt-in)
   include_temp_tables: false  # Global Temporary Table'ları (temporary='Y') kapsa (default: hayır)
   code_objects:
     enabled: true
@@ -231,7 +234,9 @@ python run.py --generate-missing --output-dir ./scripts/missing
 - PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE için TYPE BODY de aynı şekilde.
 - INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir (INVALID kontrolü yalnız PL/SQL tiplerine uygulanır).
 - **GRANT yalnız eksik (FAILED) grant'lar için** üretilir (source∖target diff); SYNC grant'lar script'e girmez. `modules.grants: false` ise hiç üretilmez (Execution Guard).
-- **USER (kullanıcı provisioning)** yalnız `modules.users` açıkken ve eksik (FAILED) user/yetki bulununca üretilir. Çıktı **tamamen yorumlu / dry-run**'dır: `CREATE USER … IDENTIFIED BY "<<PAROLAYI_BELIRLEYIN>>"` iskeleti + reconstructed `GRANT` ifadeleri. **Parola hash'i okunmaz/loglanmaz** (11g↔19c taşınabilir değil); bilinçli gözden geçirip açmadan hiçbir satır çalışmaz.
+- **USER (kullanıcı provisioning)** yalnız `modules.users` açıkken ve eksik (FAILED) user/yetki bulununca üretilir. Üretim **global/şema-bağımsızdır** → tek `<DB_ADI>_USER.sql` dosyası (her şema için tekrar üretilmez).
+  - `password_sync: false` (default) → çıktı **tamamen yorumlu / dry-run**'dır: `CREATE USER … IDENTIFIED BY "<<PAROLAYI_BELIRLEYIN>>"` iskeleti + reconstructed `GRANT`. **Parola hash'i hiç okunmaz/loglanmaz**; bilinçli gözden geçirip açmadan hiçbir satır çalışmaz.
+  - `password_sync: true` → çıktı **çalıştırılabilir**: `CREATE USER … IDENTIFIED BY VALUES '<verifier>'` (source'tan `SYS.USER$.SPARE4`/`PASSWORD` ile 11g→19c verifier taşınır) + gerçek `DEFAULT TABLESPACE`/`PROFILE` + reconstructed `GRANT`. Ortak user'larda **parola farkı NOT-SYNC** olarak da raporlanır (rapor/loga yalnız **maskeli** ilk 6 karakter gider, gerçek hash asla). ⚠️ **HASSAS DOSYA:** üretilen `<DB>_USER.sql` canlı verifier içerir — izinlerini kısıtlayın (chmod 600), repoya commit'lemeyin, uyguladıktan sonra silin. 19c'de uygulanması `SEC_CASE_SENSITIVE_LOGON` / `SQLNET.ALLOWED_LOGON_VERSION_SERVER` ayarı gerektirebilir (dosya başında uyarı vardır).
 - Tüm dosyalar UTF-8 encoding ve `SET DEFINE OFF` başlığı ile SQL*Plus uyumlu üretilir.
 
 **Çıktı dosya yapısı:**
@@ -251,7 +256,8 @@ ddl_output/
 ├── TARGET_SCHEMA_PACKAGE_BODY.sql
 ├── TARGET_SCHEMA_TRIGGER.sql
 ├── TARGET_SCHEMA_GRANT.sql            # yalnız eksik object grant'lar (modules.grants)
-├── TARGET_SCHEMA_USER.sql             # kullanıcı + yetki provisioning (DRY-RUN/yorumlu; modules.users)
+├── <DB_ADI>_USER.sql                  # kullanıcı + yetki provisioning — GLOBAL/şema-bağımsız (modules.users)
+│                                       #   password_sync=false → DRY-RUN/yorumlu · true → çalıştırılabilir/HASSAS
 └── README_apply_order.txt
 ```
 
@@ -380,6 +386,11 @@ GRANT EXECUTE ANY TYPE      TO valuser;   -- type görünürlüğü
 -- grants/users modüllerinin DBA_* görünümlerini okuyabilmesi (DBA_TAB_PRIVS, DBA_USERS,
 -- DBA_SYS_PRIVS, DBA_ROLE_PRIVS + 19c oracle_maintained; yoksa ALL_* fallback / statik filtre)
 GRANT SELECT_CATALOG_ROLE   TO valuser;   -- alternatif: GRANT SELECT ANY DICTIONARY
+
+-- (YALNIZCA modules.password_sync=true ile parola hash senkronu kullanacaksanız —
+--  verifier okuması SYS.USER$ gerektirir. En düşük ayrıcalık: aşağıdaki tek grant.
+--  Yoksa DBA_USERS.PASSWORD (yalnız 11g) denenir; o da yoksa placeholder üretilir.)
+GRANT SELECT ON SYS.USER$   TO valuser;   -- ya da source'a `sysdba` ile bağlanın
 
 -- (YALNIZCA target'ta --refresh-stats kullanacaksanız. Source read-only olduğundan
 --  orada DBMS_STATS asla çalıştırılmaz — kod düzeyinde de engellenir.)
@@ -542,6 +553,9 @@ Hızlı referans:
   (UNIQUE+NOT NULL) tespiti; `constraint_types` filtresi; conflict-safe DDL (`USING INDEX`).
 - [x] **User & Grant izolasyon modülü (v0.10.0)** — instance-wide kullanıcı + sistem/rol/object
   yetki diff; dinamik sistem-user bypass; dry-run/yorumlu `CREATE USER` üretimi (parola loglanmaz).
+- [x] **Global user akışı + parola senkronu + Execution Isolation (v0.11.0)** — users modülü
+  şema-bağımsız global faza taşındı (`--modules users` → diğer modüller atlanır); opt-in
+  `password_sync` ile 11g→19c `IDENTIFIED BY VALUES` üretimi + parola-farkı NOT-SYNC (maskeli).
 - [ ] **Auto-Sync / Remediation** — `NOT-SYNC` için hedefe yönelik `ALTER` (granüler `diffs`'ten);
   dry-run default, yalnızca target'a yazar (source read-only). (`NOT-SYNC` sequence ALTER mevcut.)
 - [ ] PostgreSQL desteği
