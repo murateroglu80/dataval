@@ -159,6 +159,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         if mc.constraints:         active_modules.add("constraints")
         if mc.sequences:           active_modules.add("sequences")
         if mc.grants:              active_modules.add("grants")
+        if mc.users:               active_modules.add("users")
         if mc.code_objects_enabled: active_modules.add("code")
         # row_counts ayrıca -- her zaman tables modülüne eşlik eder
         # veya açıkça belirtilirse çalışır
@@ -217,6 +218,8 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
     # Schema döngüsü
     # ------------------------------------------------------------------
     all_summaries: list[ModuleSummary] = []
+    # users modülü instance-wide'dır (schema-bağımsız) → tüm şema döngüsünde bir kez çalışır.
+    users_done = False
 
     for mapping in cfg.schemas:
         console.rule(f"[bold]Schema: {mapping.source} → {mapping.target}[/]")
@@ -291,6 +294,14 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
                 summary = run_grants(src_conn, tgt_conn, mapping, cfg)
                 reporter.render_module(summary)
                 all_summaries.append(summary)
+
+            # users instance-wide → ilk şema iterasyonunda bir kez (mevcut bağlantılarla)
+            if "users" in active_modules and not users_done:
+                from validator.modules.users import run as run_users
+                summary = run_users(src_conn, tgt_conn, mapping, cfg)
+                reporter.render_module(summary)
+                all_summaries.append(summary)
+                users_done = True
 
             if "row_counts" in active_modules:
                 from validator.modules.row_counts import run as run_counts

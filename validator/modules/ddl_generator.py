@@ -774,6 +774,12 @@ def generate_scripts(
             cfg, output_dir, generated_at, created_files, console, target_conn,
         )
 
+    # USER & yetki provisioning (DRY-RUN / yorumlu) — yalnız users modülü açıksa
+    if _module_on("users"):
+        _write_user_file(
+            missing_objects, target_schema, output_dir, generated_at, created_files, console,
+        )
+
     # Uygulama sırası README'si
     if created_files:
         _write_apply_order(output_dir, target_schema, created_files, generated_at)
@@ -878,6 +884,75 @@ def _write_grant_file(source_conn, source_schema, target_schema, cfg,
         console.print(
             f"  [green]✅[/green] {filename}  "
             f"([cyan]{len(stmts)}[/cyan] eksik grant)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# USER & yetki provisioning — DRY-RUN / yorumlu (hassas: parola hash'i ASLA okunmaz)
+# ---------------------------------------------------------------------------
+def _grant_from_name(obj_name: str) -> Optional[str]:
+    """users modülünün object_name'inden GRANT ifadesi kurar.
+    Biçim: '<priv/role/[priv ON owner.tbl]> → <grantee>' → 'GRANT <left> TO <grantee>;'."""
+    if " → " not in obj_name:
+        return None
+    left, grantee = obj_name.split(" → ", 1)
+    return f"GRANT {left.strip()} TO {grantee.strip()};"
+
+
+def _write_user_file(missing_objects, target_schema, output_dir,
+                     generated_at, created_files, console):
+    """
+    Eksik (FAILED) kullanıcı + yetki için **tamamen yorumlu / dry-run** advisory script.
+    Güvenlik: parola hash'leri 11g↔19c taşınabilir değildir ve dataval bunları OKUMAZ;
+    her satır yorumdur → kasıtlı gözden geçirmeden hiçbir şey çalışmaz.
+    """
+    users     = sorted(missing_objects.get("USER", []))
+    sys_privs = sorted(missing_objects.get("SYS_PRIV", []))
+    roles     = sorted(missing_objects.get("ROLE", []))
+    obj_privs = sorted(missing_objects.get("OBJ_PRIV", []))
+    if not (users or sys_privs or roles or obj_privs):
+        return
+
+    lines = [
+        _file_header(target_schema, "USER (DRY-RUN / advisory)", generated_at),
+        "-- ⚠️  DRY-RUN: TÜM satırlar yorumdur. Gözden geçirip bilinçli olarak açın.",
+        "-- ⚠️  Parola hash'leri taşınabilir DEĞİLDİR (11g DBA_USERS.PASSWORD ↔ 19c USER$.SPARE4).",
+        "--     dataval parola hash'i OKUMAZ/LOGLAMAZ — her CREATE USER için parolayı elle belirleyin.",
+        "",
+    ]
+
+    if users:
+        lines.append("-- ===== Eksik kullanıcılar (CREATE USER iskeleti) =====")
+        for u in users:
+            lines.append(f"-- CREATE USER {u} IDENTIFIED BY \"<<PAROLAYI_BELIRLEYIN>>\"")
+            lines.append(f"--   DEFAULT TABLESPACE <<TABLESPACE>> TEMPORARY TABLESPACE TEMP")
+            lines.append(f"--   PROFILE <<PROFILE>>;")
+            lines.append(f"-- ALTER USER {u} ACCOUNT UNLOCK;")
+            lines.append("")
+
+    for title, items in (("Eksik sistem yetkileri", sys_privs),
+                         ("Eksik roller", roles),
+                         ("Eksik object grant'lar", obj_privs)):
+        if not items:
+            continue
+        lines.append(f"-- ===== {title} =====")
+        for name in items:
+            stmt = _grant_from_name(name)
+            lines.append(f"-- {stmt}" if stmt else f"-- (ayrıştırılamadı) {name}")
+        lines.append("")
+
+    filename = f"{target_schema}_USER.sql"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    created_files.append(str(filepath))
+    if console:
+        total = len(users) + len(sys_privs) + len(roles) + len(obj_privs)
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{len(users)}[/cyan] user, [cyan]{total}[/cyan] kayıt — "
+            f"[yellow]DRY-RUN/yorumlu[/yellow])"
         )
 
 
