@@ -314,7 +314,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             # ----------------------------------------------------------
             if cfg.generate_scripts.enabled:
                 _run_generate_scripts(
-                    src_conn, tgt_conn, all_summaries, mapping, cfg
+                    src_conn, tgt_conn, all_summaries, mapping, cfg, active_modules
                 )
 
     # ------------------------------------------------------------------
@@ -327,8 +327,12 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 # Yardımcı print fonksiyonları
 # ---------------------------------------------------------------------------
 
-def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg):
-    """Validation sonuçlarından eksik objeleri toplayıp DDL dosyaları üretir."""
+def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, enabled_modules=None):
+    """Validation sonuçlarından eksik objeleri toplayıp DDL dosyaları üretir.
+
+    `enabled_modules`: açık validation modülleri (Execution Guard). Generator'a
+    iletilir → `modules.X=false` olan bir modülün sahiplendiği tip üretilmez.
+    """
     from validator.modules.ddl_generator import generate_scripts
     from validator.result import Status
 
@@ -389,6 +393,7 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg):
         not_sync_sequences=not_sync_sequences,
         missing_constraints=missing_constraints,
         target_conn=tgt_conn,
+        enabled_modules=enabled_modules,
     )
 
     console.print()

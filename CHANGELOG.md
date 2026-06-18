@@ -5,6 +5,26 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.9.1] - 2026-06-18
+
+### Düzeltilenler
+- **`modules.grants: false` baypas ediliyordu — GRANT scriptleri yine de üretiliyordu.**
+  `--generate-missing` akışı `modules.grants` yerine ayrı bir bayrağı
+  (`generate_scripts.types.GRANT`, varsayılan açık) okuyordu ve grants modülü kapalıyken bile
+  `<TGT>_GRANT.sql` üretip ekrana basıyordu. Artık üretim **Execution Guard** ile sahibi modüle
+  bağlı: `modules.grants=false` ⇒ grant fetch / diff / stdout / DDL %100 engellenir.
+- **Filtresiz GRANT dökümü (SYNC olanlar dahil binlerce grant).** `_get_grant_statements` tüm
+  source grant'larını koşulsuz döküyordu (örn. 6463 satır, target'ta zaten var olanlar dahil).
+  Artık yalnız **eksik** (source'ta var / target'ta yok) grant'lar yeni
+  `grants.missing_grant_rows` diff'i ile üretilir — `only_missing` / FAILED-only sözleşmesi GRANT
+  için de geçerli. Target bağlantısı yoksa diff yapılamayacağından üretim güvenli şekilde atlanır.
+
+### Değiştirilenler
+- **Merkezi Execution Guard (üretim).** `generate_scripts` artık `enabled_modules` alır; üretim
+  tipleri sahibi modüle bağlanır (`TYPE_MODULE`: `GRANT→grants`, `CONSTRAINT→constraints`,
+  `SEQUENCE→sequences`, `INDEX→indexes`). Sahibi kapalı modül olan bir tip hiç işlenmez (PL/SQL ve
+  SYNONYM eksikliği `inventory`'den geldiği için kapsam dışı bırakıldı).
+
 ## [0.9.0] - 2026-06-18
 
 ### Eklenenler
