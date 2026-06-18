@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from validator.connection import (
     fetch_all, fetch_one, assert_writable, safe_table_ref, build_pool,
+    build_connection,
 )
 from validator.debug import dbg
 from validator.result import ValidationResult, ModuleSummary, Status
@@ -90,6 +91,36 @@ def _resolve_mode(table_name: str, num_rows: int | None, cfg: AppConfig) -> str:
         return "stats"
 
 
+# callTimeout aşımının ORA kodları sürüm/moda göre değişir:
+#   thin  → ORA-03136 (3136)
+#   thick → ORA-03156 (3156, "OCI call timed out") + bağlantı KOPAR (DPY-1080/DPY-4011)
+#   ayrıca kullanıcı/oturum iptali → ORA-01013 (1013)
+_TIMEOUT_CODES = (3136, 3156, 1013)
+
+
+def _is_timeout(exc: Exception) -> bool:
+    """Bir istisnanın callTimeout aşımı olup olmadığını sürüm/mod-bağımsız tespit eder."""
+    msg = str(exc)
+    try:
+        (err,) = exc.args
+        if getattr(err, "code", None) in _TIMEOUT_CODES:
+            return True
+        msg = f"{msg} {getattr(err, 'message', '')}"
+    except (ValueError, AttributeError):
+        pass
+    msg = msg.lower()
+    return ("timed out" in msg
+            or any(f"ora-{c:05d}" in msg for c in _TIMEOUT_CODES))
+
+
+def _reset_timeout(conn) -> None:
+    """callTimeout'u güvenle sıfırla. Bağlantı timeout'ta koptuysa (thick) yut."""
+    try:
+        conn.callTimeout = 0
+    except Exception:
+        pass
+
+
 def _count_exact(conn: oracledb.Connection, schema: str, table: str,
                  timeout_ms: int, parallel: int) -> tuple[int | None, str]:
     """Exact COUNT(*). Dönüş: (sayı, kullanılan_mod)"""
@@ -101,13 +132,12 @@ def _count_exact(conn: oracledb.Connection, schema: str, table: str,
         cursor = conn.cursor()
         cursor.execute(sql)
         return cursor.fetchone()[0], "EXACT"
-    except oracledb.DatabaseError as e:
-        (err,) = e.args
-        if err.code in (3136, 1013):  # callTimeout / ORA-01013 user requested cancel
+    except Exception as e:
+        if _is_timeout(e):
             return None, "TIMEOUT"
         raise
     finally:
-        conn.callTimeout = 0  # sıfırla
+        _reset_timeout(conn)
 
 
 def _count_sample(conn: oracledb.Connection, schema: str, table: str,
@@ -125,13 +155,12 @@ def _count_sample(conn: oracledb.Connection, schema: str, table: str,
         sampled = cursor.fetchone()[0]
         estimated = int(sampled * (100.0 / pct)) if pct > 0 else 0
         return estimated, f"SAMPLE({pct}%)"
-    except oracledb.DatabaseError as e:
-        (err,) = e.args
-        if err.code in (3136, 1013):
+    except Exception as e:
+        if _is_timeout(e):
             return None, "TIMEOUT"
         raise
     finally:
-        conn.callTimeout = 0
+        _reset_timeout(conn)
 
 
 def _refresh_stats(conn_cfg, conn: oracledb.Connection, schema: str, table: str, degree: int = 4):
@@ -309,20 +338,95 @@ def _run_parallel(summary: ModuleSummary, jobs: list, cfg: AppConfig, rc, timeou
         src_pool.close()
 
 
-def _run_serial(summary: ModuleSummary, jobs: list, src_conn, tgt_conn, rc, timeout_ms: int):
-    """exact/sample işlerini mevcut tek bağlantı üzerinde seri sayar (varsayılan davranış)."""
-    for job in jobs:
-        table = job["table"]
-        mode = job["mode"]
-        if mode == "exact":
-            src_count, src_mode = _count_exact(src_conn, job["src_schema"], table, timeout_ms, rc.parallel_degree)
-            tgt_count, tgt_mode = _count_exact(tgt_conn, job["tgt_schema"], table, timeout_ms, rc.parallel_degree)
-        else:  # sample
-            src_count, src_mode = _count_sample(src_conn, job["src_schema"], table, rc.sample_pct, timeout_ms, rc.parallel_degree)
-            tgt_count, tgt_mode = _count_sample(tgt_conn, job["tgt_schema"], table, rc.sample_pct, timeout_ms, rc.parallel_degree)
+def _ensure_healthy(st: dict) -> None:
+    """Bağlantı sağlıksızsa (thick timeout sonrası kopmuş) kapat ve yeniden bağlan.
 
-        status, sv, tv, note = _classify(src_count, tgt_count, src_mode, tgt_mode, job["stale_warning"], rc)
-        summary.add(_result(job["src_schema"], table, status, sv, tv, note))
+    `st` = {"conn", "cfg", "owned"}. Yeniden açılan bağlantı `owned=True` işaretlenir →
+    _run_serial sonunda kapatılır (çağıranın verdiği ilk bağlantıyı çağıran kapatır).
+    Yeniden bağlanma da başarısız olursa conn=None → sonraki tablo ERROR raporlar.
+    """
+    conn = st["conn"]
+    if conn is None:
+        return
+    try:
+        if conn.is_healthy():
+            return
+    except Exception:
+        pass
+    # Sağlıksız → kapat (çift-kapatma get_connection'da güvenli) ve yeniden bağlan
+    try:
+        conn.close()
+    except Exception:
+        pass
+    st["conn"] = None
+    try:
+        st["conn"] = build_connection(st["cfg"])
+        st["owned"] = True
+    except Exception:
+        st["conn"] = None  # sonraki tablo "bağlantı yok" olarak raporlanır
+
+
+def _run_serial(summary: ModuleSummary, jobs: list, src_conn, tgt_conn, rc,
+                timeout_ms: int, cfg: AppConfig):
+    """exact/sample işlerini tek bağlantı üzerinde seri sayar (varsayılan davranış).
+
+    Dayanıklılık: bir tablonun timeout'u (thick mode'da bağlantıyı koparır) veya hatası
+    diğerlerini durdurmaz; sağlıksız bağlantı bir sonraki tablo için yeniden açılır.
+    """
+    state = {
+        "src": {"conn": src_conn, "cfg": cfg.source, "owned": False},
+        "tgt": {"conn": tgt_conn, "cfg": cfg.target, "owned": False},
+    }
+
+    def _count_one(side: str, schema: str, table: str, mode: str):
+        """(count, used_mode, error) döner; bağlantıyı çökertmeden hatayı yapısallaştırır."""
+        st = state[side]
+        conn = st["conn"]
+        if conn is None:
+            return None, mode.upper(), "bağlantı yok (önceki timeout sonrası yeniden bağlanılamadı)"
+        try:
+            if mode == "exact":
+                return (*_count_exact(conn, schema, table, timeout_ms, rc.parallel_degree), None)
+            return (*_count_sample(conn, schema, table, rc.sample_pct, timeout_ms, rc.parallel_degree), None)
+        except oracledb.DatabaseError as e:
+            (err,) = e.args
+            return None, mode.upper(), f"ORA-{err.code}: {err.message.strip()}"
+        except Exception as e:
+            return None, mode.upper(), str(e)
+        finally:
+            _ensure_healthy(st)  # timeout/hata bağlantıyı öldürdüyse sonraki tablo için yenile
+
+    try:
+        for job in jobs:
+            table = job["table"]
+            mode = job["mode"]
+            src_count, src_mode, src_err = _count_one("src", job["src_schema"], table, mode)
+            tgt_count, tgt_mode, tgt_err = _count_one("tgt", job["tgt_schema"], table, mode)
+
+            if src_err or tgt_err:
+                parts = []
+                if src_err:
+                    parts.append(f"source: {src_err}")
+                if tgt_err:
+                    parts.append(f"target: {tgt_err}")
+                summary.add(_result(
+                    job["src_schema"], table, Status.FAILED,
+                    f"{src_count:,}" if src_count is not None else "ERR",
+                    f"{tgt_count:,}" if tgt_count is not None else "ERR",
+                    "; ".join(parts),
+                ))
+                continue
+
+            status, sv, tv, note = _classify(src_count, tgt_count, src_mode, tgt_mode, job["stale_warning"], rc)
+            summary.add(_result(job["src_schema"], table, status, sv, tv, note))
+    finally:
+        # Yalnız bu fonksiyonun reconnect ile açtıklarını kapat (ilk bağlantıları çağıran kapatır).
+        for st in state.values():
+            if st["owned"] and st["conn"] is not None:
+                try:
+                    st["conn"].close()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +538,6 @@ def run(
         if rc.parallel_workers and rc.parallel_workers > 1:
             _run_parallel(summary, count_jobs, cfg, rc, timeout_ms)
         else:
-            _run_serial(summary, count_jobs, src_conn, tgt_conn, rc, timeout_ms)
+            _run_serial(summary, count_jobs, src_conn, tgt_conn, rc, timeout_ms, cfg)
 
     return summary

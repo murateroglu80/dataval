@@ -5,6 +5,24 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.12.2] - 2026-06-18
+
+### Düzeltmeler
+- **`row_counts` timeout'ta tüm koşuyu çökertiyordu (thick mode).** Sorgu `timeout_sec`'i aşınca
+  thick OCI **ORA-03156** ("OCI call timed out") fırlatıp bağlantıyı **koparıyor** (DPY-1080/4011);
+  ardından `finally: conn.callTimeout = 0` ölü bağlantıda **DPY-1001** fırlatıp orijinal hatayı
+  maskeleyerek süreci çökertiyordu. Üstelik timeout yalnız ORA-03136/01013 ile tanınıyordu (thick
+  03156 kaçıyordu). Düzeltmeler:
+  - **Sürüm/mod-bağımsız timeout tespiti** (`_is_timeout`): ORA-03136 (thin) / ORA-03156 (thick) /
+    ORA-01013 + mesaj tabanlı yedek → doğru `TIMEOUT` sınıflaması.
+  - **Güvenli `callTimeout` sıfırlama** (`_reset_timeout`) ve **güvenli bağlantı kapatma**
+    (`get_connection`): teardown artık ölü bağlantıda istisna yutar, koşuyu çökertmez.
+  - **Seri modda dayanıklılık + otomatik yeniden bağlanma:** bir tablonun timeout'u/hatası
+    diğerlerini durdurmaz (FAILED olarak raporlanır); timeout bağlantıyı kopardıysa bir sonraki
+    tablo için bağlantı **yeniden açılır** (`is_healthy` → `build_connection`; reconnect'le açılan
+    bağlantı sonda kapatılır, çift-kapatma güvenli). Önceden ilk timeout'tan sonra kalan tablolar
+    da çöküyordu.
+
 ## [0.12.1] - 2026-06-18
 
 ### Düzeltmeler

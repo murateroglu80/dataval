@@ -141,7 +141,12 @@ def get_connection(cfg, timeout_ms=None):
             conn.callTimeout = timeout_ms
         yield conn
     finally:
-        conn.close()
+        # Kapanış asla teardown'ı çökertmemeli: thick mode'da callTimeout bağlantıyı
+        # koparmış olabilir (ORA-03156 → DPY-1080) → close() DPY-1001 fırlatır. Yut.
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def test_connection(cfg):
