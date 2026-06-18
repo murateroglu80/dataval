@@ -5,6 +5,16 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.12.1] - 2026-06-18
+
+### Düzeltmeler
+- **`row_counts` sample modunda ORA-00933 (SQL command not properly ended).** Üretilen sayım
+  sorgusunda `SAMPLE` clause tablo alias'ından **sonra** geliyordu
+  (`FROM s.t t SAMPLE(1)`); Oracle söz diziminde `SAMPLE` tablo adının hemen ardına, alias'tan
+  **önce** gelmeli. Düzeltildi: `FROM s.t SAMPLE(1) t` (parallel hint için alias `t` korunur).
+  `exact` modunda alias `SAMPLE` içermediği için görünmüyordu; `auto`/`sample` orta-büyük tabloda
+  ortaya çıkıyordu.
+
 ## [0.12.0] - 2026-06-18
 
 ### Eklenenler

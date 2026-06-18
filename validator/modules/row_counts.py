@@ -114,7 +114,9 @@ def _count_sample(conn: oracledb.Connection, schema: str, table: str,
                   pct: float, timeout_ms: int, parallel: int) -> tuple[int | None, str]:
     """SAMPLE bazlı tahmin. Dönüş: (tahmini_sayı, kullanılan_mod)"""
     hint = f"/*+ PARALLEL(t, {parallel}) */" if parallel > 0 else ""
-    sql = f"SELECT {hint} COUNT(*) FROM {safe_table_ref(schema, table)} t SAMPLE({pct})"
+    # SAMPLE clause tablo adının hemen ardına, alias'tan ÖNCE gelmeli (Oracle söz dizimi);
+    # alias 'SAMPLE'tan önce yazılırsa ORA-00933. Alias 't' parallel hint için korunur.
+    sql = f"SELECT {hint} COUNT(*) FROM {safe_table_ref(schema, table)} SAMPLE({pct}) t"
 
     conn.callTimeout = timeout_ms
     try:
