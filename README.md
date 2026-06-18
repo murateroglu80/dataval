@@ -13,6 +13,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Sequence kontrolü** — INCREMENT_BY, MIN/MAX, CACHE, CYCLE parametreleri; LAST_NUMBER toleransı
 - **Kod objeleri** — DDL hash karşılaştırması (whitespace normalize, schema adı soyutlanır)
 - **Grants (yetki) doğrulama** — source ↔ target object privilege karşılaştırması; `DBA_TAB_PRIVS` tercih, `ALL_TAB_PRIVS` fallback; `GRANTABLE`/`HIERARCHY` farkı NOT-SYNC olarak raporlanır (opt-in)
+- **Users (kullanıcı + yetki izolasyonu)** — instance-wide: app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir — parola hash'i okunmaz/loglanmaz (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT** ve GRANT üretilir
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
@@ -122,6 +123,7 @@ modules:
   indexes: true
   sequences: true
   grants: false            # object privilege karşılaştırması (opt-in; DBA_TAB_PRIVS tercih)
+  users: false             # instance-wide kullanıcı + sistem/rol/object yetki izolasyonu (opt-in)
   include_temp_tables: false  # Global Temporary Table'ları (temporary='Y') kapsa (default: hayır)
   code_objects:
     enabled: true
@@ -326,6 +328,7 @@ dataval/
 │       ├── sequences.py
 │       ├── code_objects.py
 │       ├── grants.py
+│       ├── users.py
 │       ├── row_counts.py
 │       └── ddl_generator.py
 ├── run.py
@@ -363,7 +366,8 @@ GRANT EXECUTE ANY PROCEDURE TO valuser;   -- procedure / function / package gör
 GRANT EXECUTE ANY TYPE      TO valuser;   -- type görünürlüğü
 
 -- Native DDL üretimi (ALL_SOURCE/ALL_INDEXES/ALL_CONSTRAINTS …) + katalog erişimi +
--- grants modülünün DBA_TAB_PRIVS'i okuyabilmesi (tam yetki görünürlüğü; yoksa ALL_TAB_PRIVS'e düşer)
+-- grants/users modüllerinin DBA_* görünümlerini okuyabilmesi (DBA_TAB_PRIVS, DBA_USERS,
+-- DBA_SYS_PRIVS, DBA_ROLE_PRIVS + 19c oracle_maintained; yoksa ALL_* fallback / statik filtre)
 GRANT SELECT_CATALOG_ROLE   TO valuser;   -- alternatif: GRANT SELECT ANY DICTIONARY
 
 -- (YALNIZCA target'ta --refresh-stats kullanacaksanız. Source read-only olduğundan
@@ -523,11 +527,12 @@ Hızlı referans:
   yok); INDEX ve CONSTRAINT üretimi eklendi.
 - [x] **Grants doğrulama modülü (v0.8.0)** — source↔target object privilege karşılaştırması;
   `DBA_TAB_PRIVS` tercih + `ALL_TAB_PRIVS` fallback.
+- [x] **Semantic constraint eşleştirme (v0.9.0)** — isim yerine kolon+tip bazlı; pseudo-PK
+  (UNIQUE+NOT NULL) tespiti; `constraint_types` filtresi; conflict-safe DDL (`USING INDEX`).
+- [x] **User & Grant izolasyon modülü (v0.10.0)** — instance-wide kullanıcı + sistem/rol/object
+  yetki diff; dinamik sistem-user bypass; dry-run/yorumlu `CREATE USER` üretimi (parola loglanmaz).
 - [ ] **Auto-Sync / Remediation** — `NOT-SYNC` için hedefe yönelik `ALTER` (granüler `diffs`'ten);
   dry-run default, yalnızca target'a yazar (source read-only). (`NOT-SYNC` sequence ALTER mevcut.)
-- [ ] **Semantic constraint eşleştirme** — isim yerine kolon+tip bazlı; pseudo-PK (UNIQUE+NOT NULL)
-  tespiti; `constraint_types` filtresi. (bkz. `docs/`)
-- [ ] **User & Grant izolasyon modülü** — `CREATE USER` + sistem-kullanıcı bypass'lı yetki diff.
 - [ ] PostgreSQL desteği
 - [ ] JSON çıktı modu (--output json)
 - [ ] CI/CD entegrasyonu için exit code yönetimi

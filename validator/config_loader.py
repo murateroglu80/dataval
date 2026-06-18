@@ -82,6 +82,8 @@ class ModulesConfig:
     constraint_types: set = field(default_factory=lambda: {"PK", "UK", "FK", "CHECK"})
     sequences: bool = True
     grants: bool = False
+    # users: instance-wide kullanıcı + sistem/rol/object yetki izolasyonu (opt-in).
+    users: bool = False
     # include_temp_tables: Global Temporary Table'ları (all_tables.temporary='Y')
     # doğrulama kapsamına alır. Default False → GTT'ler hem tables hem constraints
     # modülünde gürültü yaratmaması için atlanır.
@@ -238,6 +240,7 @@ def _parse_modules(raw: dict) -> ModulesConfig:
         constraint_types=_parse_constraint_types(raw.get("constraint_types", "ALL")),
         sequences=raw.get("sequences", True),
         grants=raw.get("grants", False),
+        users=raw.get("users", False),
         include_temp_tables=bool(raw.get("include_temp_tables", False)),
         code_objects_enabled=co.get("enabled", True),
         code_object_types=co.get("types", [

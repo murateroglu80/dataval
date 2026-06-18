@@ -5,6 +5,28 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.10.0] - 2026-06-18
+
+### Eklenenler
+- **Users (kullanıcı & yetki izolasyon) modülü.** Yeni `validator/modules/users.py` —
+  **instance-wide** (schema-scoped `grants.py`'den bağımsız). Karşılaştırır:
+  - **User existence + öznitelik:** app kullanıcılarının varlığı (src∖tgt → `FAILED`,
+    tgt∖src → extra) ve `account_status` / `default_tablespace` / `profile` farkı → `NOT-SYNC`.
+  - **Sistem yetkileri** (`DBA_SYS_PRIVS`), **rol grant'ları** (`DBA_ROLE_PRIVS`,
+    `admin_option`/`default_role` diff) ve **grantee-merkezli object grant'lar** (`DBA_TAB_PRIVS`,
+    `ALL_TAB_PRIVS` fallback): küme farkı → `FAILED`, öznitelik farkı → `NOT-SYNC`, birebir → `SYNC`.
+  - `object_type ∈ {USER, SYS_PRIV, ROLE, OBJ_PRIV}`. `modules.users` (veya `--modules users`)
+    ile açılır (opt-in, default kapalı). Instance-wide olduğundan şema döngüsünde **bir kez** çalışır.
+- **Dinamik sistem-kullanıcı filtresi (`_non_system_users`).** 12c+/19c'de
+  `DBA_USERS.oracle_maintained = 'N'`; 11g'de (kolon yok → ORA-00904) curated statik liste +
+  prefix (`APEX_`, `FLOWS_`, `SPATIAL_`, `C##`, …) fallback; `DBA_USERS` erişimi yoksa (ORA-00942)
+  `ALL_USERS`'a düşer. SYS/SYSTEM/XDB/APEX_* gibi altyapı user'ları hiçbir sorguda görünmez.
+- **Dry-run / yorumlu `CREATE USER` üretimi.** FAILED user + yetkiler için advisory `<TGT>_USER.sql`:
+  `CREATE USER … IDENTIFIED BY "<<PAROLAYI_BELIRLEYIN>>"` iskeleti + reconstructed `GRANT` ifadeleri.
+  **Tüm satırlar yorumdur** (bilinçli açılmadan çalışmaz) ve **parola hash'i okunmaz/loglanmaz**
+  (11g `DBA_USERS.PASSWORD` ↔ 19c `USER$.SPARE4` taşınabilir değil). Üretim Execution Guard'a tabidir
+  (`modules.users=false` ⇒ dosya yok).
+
 ## [0.9.1] - 2026-06-18
 
 ### Düzeltilenler

@@ -15,6 +15,9 @@ modules:
   sequences: true
   grants: false                 # object privilege (yetki) karşılaştırması (src↔tgt);
                                 # DBA_TAB_PRIVS tercih + ALL_TAB_PRIVS fallback. Opt-in.
+  users: false                  # instance-wide kullanıcı + sistem/rol/object yetki
+                                # izolasyonu. Sistem user'ları (SYS, APEX_* …) dinamik
+                                # elenir (19c oracle_maintained, 11g statik). Opt-in.
   # Global Temporary Table'ları (all_tables.temporary='Y') kapsa.
   # Default false → GTT'ler tables ve constraints'te atlanır (migration gürültüsü).
   include_temp_tables: false
