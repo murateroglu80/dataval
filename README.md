@@ -15,7 +15,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Grants (yetki) doğrulama** — source ↔ target object privilege karşılaştırması; `DBA_TAB_PRIVS` tercih, `ALL_TAB_PRIVS` fallback; `GRANTABLE`/`HIERARCHY` farkı NOT-SYNC olarak raporlanır (opt-in)
 - **Users (kullanıcı + yetki izolasyonu)** — instance-wide: app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir — parola hash'i okunmaz/loglanmaz (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
-- **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT** ve GRANT üretilir
+- **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT**, GRANT (yalnız eksik) ve **USER** (dry-run/yorumlu) üretilir. Üretim **Execution Guard**'a tabidir: bir tip yalnızca onu sahiplenen validation modülü açıksa üretilir
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar ignore edilir, sorun sayılmaz
 - **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
@@ -167,8 +167,13 @@ generate_scripts:
     SYNONYM:   false
     INDEX:     true             # eksik index'ler (ALL_INDEXES native; UNIQUE/BITMAP/DESC/FBI)
     CONSTRAINT: true            # eksik PK/UK/FK/CHECK (ALTER TABLE ADD; PK/UK→FK sıralı)
-    GRANT:     true             # source schema üzerindeki object grant'ları
+    GRANT:     true             # yalnız EKSİK object grant'lar (modules.grants açıksa)
 ```
+
+> **GRANT artık yalnız eksik üretilir (v0.9.1+).** Üretim source↔target diff'ine dayanır —
+> target'ta zaten var olan (SYNC) grant'lar script'e **girmez**. Ayrıca **Execution Guard**'a
+> tabidir: `modules.grants: false` ise `types.GRANT: true` olsa bile GRANT scripti üretilmez
+> (fetch/diff/stdout/DDL hiç çalışmaz). Aynı kural `USER` üretimini `modules.users`'a bağlar.
 
 > **Tamamen native üretim (v0.7.0+).** DDL üretimi artık `DBMS_METADATA` kullanmaz; her tip
 > ilgili sözlük görünümünden (`ALL_SOURCE`, `ALL_TRIGGERS`, `ALL_SYNONYMS`, `ALL_INDEXES`,
@@ -215,7 +220,7 @@ python run.py --generate-missing --output-dir ./scripts/missing
 
 `--generate-missing` flag'i validation sonucunda target'ta eksik bulunan objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur.
 
-**Desteklenen tipler:** SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER, TYPE, TYPE BODY, SYNONYM, **INDEX**, **CONSTRAINT** (PK/UK/FK/CHECK), GRANT
+**Desteklenen tipler:** SEQUENCE, FUNCTION, PROCEDURE, PACKAGE, PACKAGE BODY, TRIGGER, TYPE, TYPE BODY, SYNONYM, **INDEX**, **CONSTRAINT** (PK/UK/FK/CHECK), GRANT (yalnız eksik), **USER** (dry-run/yorumlu)
 
 **Önemli notlar:**
 - Üretim **tamamen native**'dir — hiçbir tip `DBMS_METADATA` kullanmaz (11g `ORA-03113` riski yok).
@@ -225,6 +230,8 @@ python run.py --generate-missing --output-dir ./scripts/missing
 - PL/SQL DDL'i `ALL_SOURCE`'tan birebir alınır; hedef şema yalnız `CREATE` başlığına enjekte edilir, gövde metni bozulmaz.
 - PACKAGE seçildiğinde PACKAGE BODY ayrı dosyada otomatik oluşturulur. TYPE için TYPE BODY de aynı şekilde.
 - INVALID durumdaki objeler `include_invalid: false` (varsayılan) ile atlanır ve uyarı verilir (INVALID kontrolü yalnız PL/SQL tiplerine uygulanır).
+- **GRANT yalnız eksik (FAILED) grant'lar için** üretilir (source∖target diff); SYNC grant'lar script'e girmez. `modules.grants: false` ise hiç üretilmez (Execution Guard).
+- **USER (kullanıcı provisioning)** yalnız `modules.users` açıkken ve eksik (FAILED) user/yetki bulununca üretilir. Çıktı **tamamen yorumlu / dry-run**'dır: `CREATE USER … IDENTIFIED BY "<<PAROLAYI_BELIRLEYIN>>"` iskeleti + reconstructed `GRANT` ifadeleri. **Parola hash'i okunmaz/loglanmaz** (11g↔19c taşınabilir değil); bilinçli gözden geçirip açmadan hiçbir satır çalışmaz.
 - Tüm dosyalar UTF-8 encoding ve `SET DEFINE OFF` başlığı ile SQL*Plus uyumlu üretilir.
 
 **Çıktı dosya yapısı:**
@@ -243,7 +250,8 @@ ddl_output/
 ├── TARGET_SCHEMA_PACKAGE.sql
 ├── TARGET_SCHEMA_PACKAGE_BODY.sql
 ├── TARGET_SCHEMA_TRIGGER.sql
-├── TARGET_SCHEMA_GRANT.sql
+├── TARGET_SCHEMA_GRANT.sql            # yalnız eksik object grant'lar (modules.grants)
+├── TARGET_SCHEMA_USER.sql             # kullanıcı + yetki provisioning (DRY-RUN/yorumlu; modules.users)
 └── README_apply_order.txt
 ```
 
@@ -253,6 +261,9 @@ ddl_output/
 TYPE → TYPE BODY → SEQUENCE → SYNONYM → INDEX → CONSTRAINT →
 FUNCTION → PROCEDURE → PACKAGE → PACKAGE BODY → TRIGGER → GRANT
 ```
+
+> `USER` dosyası tamamen dry-run/yorumlu (advisory) olduğundan apply-order listesinin **sonunda**
+> yer alır; uygulanmadan önce elle gözden geçirilmesi beklenir.
 
 ---
 
