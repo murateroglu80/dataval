@@ -166,6 +166,14 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         if "row_counts" in (modules or ""):
             active_modules.add("row_counts")
 
+    # Modül sınıflandırması — global (instance-wide, şema-bağımsız) vs schema-scoped.
+    # GLOBAL_MODULES schema döngüsünden ÖNCE bir kez koşar; geri kalanı her mapping için.
+    # `--modules users` → scoped_active boş → schema döngüsüne hiç girilmez (Execution
+    # Isolation: tables/index/… flag'leri true olsa bile o anlık akışta taranmaz).
+    GLOBAL_MODULES = {"users"}
+    global_active = active_modules & GLOBAL_MODULES
+    scoped_active = active_modules - GLOBAL_MODULES
+
     # ------------------------------------------------------------------
     # Raporlama — merkezi Reporter. Dosya logu HER ZAMAN açıktır; tek eşik (level)
     # hem terminal tablolarını, hem canlı ekranı, hem dosya logunu süzer:
@@ -214,14 +222,31 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
         console.print("[bold red]Bağlantı hatası — işlem durduruldu.[/]")
         sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Schema döngüsü
-    # ------------------------------------------------------------------
     all_summaries: list[ModuleSummary] = []
-    # users modülü instance-wide'dır (schema-bağımsız) → tüm şema döngüsünde bir kez çalışır.
-    users_done = False
 
-    for mapping in cfg.schemas:
+    # ------------------------------------------------------------------
+    # Global (instance-wide) faz — schema döngüsünden ÖNCE, döngü DIŞINDA, bir kez.
+    # cfg.schemas'a hiç bakmaz → boş schemas'ta bile çalışır.
+    # ------------------------------------------------------------------
+    if global_active:
+        console.rule("[bold]Global (instance-wide) kontroller[/]")
+        console.print()
+        with get_connection(cfg.source) as src_conn, \
+             get_connection(cfg.target) as tgt_conn:
+            if "users" in global_active:
+                from validator.modules.users import run as run_users
+                summary = run_users(src_conn, tgt_conn, cfg)
+                reporter.render_module(summary)
+                all_summaries.append(summary)
+                if cfg.generate_scripts.enabled:
+                    _run_user_generate(src_conn, tgt_conn, summary, cfg)
+
+    # ------------------------------------------------------------------
+    # Schema döngüsü — yalnız schema-scoped modül varsa VE schema mapping varsa.
+    # (--modules users → buraya hiç girilmez; tek bir tablo/index taranmaz.)
+    # ------------------------------------------------------------------
+    if scoped_active and cfg.schemas:
+      for mapping in cfg.schemas:
         console.rule(f"[bold]Schema: {mapping.source} → {mapping.target}[/]")
         console.print()
         debug.dbg("schema", f"{mapping.source} → {mapping.target} işleniyor")
@@ -295,14 +320,6 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
                 reporter.render_module(summary)
                 all_summaries.append(summary)
 
-            # users instance-wide → ilk şema iterasyonunda bir kez (mevcut bağlantılarla)
-            if "users" in active_modules and not users_done:
-                from validator.modules.users import run as run_users
-                summary = run_users(src_conn, tgt_conn, mapping, cfg)
-                reporter.render_module(summary)
-                all_summaries.append(summary)
-                users_done = True
-
             if "row_counts" in active_modules:
                 from validator.modules.row_counts import run as run_counts
                 rcc = cfg.row_count
@@ -325,7 +342,7 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
             # ----------------------------------------------------------
             if cfg.generate_scripts.enabled:
                 _run_generate_scripts(
-                    src_conn, tgt_conn, all_summaries, mapping, cfg, active_modules
+                    src_conn, tgt_conn, all_summaries, mapping, cfg, scoped_active
                 )
 
     # ------------------------------------------------------------------
@@ -337,6 +354,51 @@ def main(source_schema, target_schema, modules, count_mode, sample_pct,
 # ---------------------------------------------------------------------------
 # Yardımcı print fonksiyonları
 # ---------------------------------------------------------------------------
+
+def _run_user_generate(src_conn, tgt_conn, users_summary, cfg):
+    """Global USER provisioning DDL'i üretir (tek `<DB>_USER.sql`, schema-bağımsız).
+
+    FAILED user-family (USER/SYS_PRIV/ROLE/OBJ_PRIV) + (password_sync ise) parola
+    NOT-SYNC kayıtlarını toplayıp ddl_generator.generate_user_script'e verir. Hash
+    yalnız dosyaya yazılır — bu fonksiyon konsola hiçbir verifier basmaz.
+    """
+    from validator.modules.ddl_generator import generate_user_script
+    from validator.modules.users import _db_label
+    from validator.result import Status
+
+    missing = {"USER": [], "SYS_PRIV": [], "ROLE": [], "OBJ_PRIV": []}
+    password_diff: list[str] = []
+    for r in users_summary.results:
+        ot = (r.object_type or "").upper()
+        if ot not in missing:
+            continue
+        if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
+            if r.object_name not in missing[ot]:
+                missing[ot].append(r.object_name)
+        elif ot == "USER" and r.status == Status.NOT_SYNC:
+            if any((d[0] == "password") for d in (r.diffs or [])):
+                if r.object_name not in password_diff:
+                    password_diff.append(r.object_name)
+
+    if not any(missing.values()) and not password_diff:
+        console.print("[dim]  ℹ️  User generate: eksik user/yetki veya parola farkı yok.[/]")
+        return
+
+    dblabel = _db_label(tgt_conn)
+    psync = bool(getattr(cfg.modules, "password_sync", False))
+    n_user, n_pwd = len(missing["USER"]), len(password_diff)
+    console.rule(f"[bold cyan]USER Script Üretimi[/] — {n_user} eksik user"
+                 + (f" + {n_pwd} parola-farkı" if n_pwd else "")
+                 + (" [yellow](password_sync — HASSAS)[/]" if psync else " (dry-run)"))
+    created = generate_user_script(
+        src_conn, missing, password_diff, dblabel,
+        cfg.generate_scripts, console, password_sync=psync,
+    )
+    if created and psync:
+        console.print("[yellow]  ⚠️  Üretilen dosya canlı verifier içerir — izinleri kısıtlayın, "
+                      "uygulamadan sonra silin.[/]")
+    console.print()
+
 
 def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, enabled_modules=None):
     """Validation sonuçlarından eksik objeleri toplayıp DDL dosyaları üretir.
@@ -359,9 +421,14 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
     # Eksik constraint'ler → (tablo, label, imza). object_type="CONSTRAINT(PK|UK|FK|CHECK)",
     # object_name=tablo, source_value=yapısal imza (constraints.py adı bilinçli atar).
     missing_constraints: list[tuple] = []
+    # user-family (USER/SYS_PRIV/ROLE/OBJ_PRIV) artık GLOBAL akış tarafından üretilir
+    # (run._run_user_generate); scoped generate bunları toplamaz.
+    _USER_FAMILY = {"USER", "SYS_PRIV", "ROLE", "OBJ_PRIV"}
     for sm in summaries:
         for r in sm.results:
             obj_type = (r.object_type or "").upper()
+            if obj_type in _USER_FAMILY:
+                continue
             if r.status == Status.FAILED and r.target_value in (None, "", "—", "-", "(yok)"):
                 if obj_type.startswith("CONSTRAINT("):
                     label = obj_type[len("CONSTRAINT("):-1]  # PK / UK / FK / CHECK

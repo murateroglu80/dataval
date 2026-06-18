@@ -774,11 +774,8 @@ def generate_scripts(
             cfg, output_dir, generated_at, created_files, console, target_conn,
         )
 
-    # USER & yetki provisioning (DRY-RUN / yorumlu) — yalnız users modülü açıksa
-    if _module_on("users"):
-        _write_user_file(
-            missing_objects, target_schema, output_dir, generated_at, created_files, console,
-        )
+    # USER & yetki provisioning artık schema-scoped DEĞİL — global akış üretir
+    # (run._run_user_generate → generate_user_script). Burada üretilmez.
 
     # Uygulama sırası README'si
     if created_files:
@@ -899,28 +896,99 @@ def _grant_from_name(obj_name: str) -> Optional[str]:
     return f"GRANT {left.strip()} TO {grantee.strip()};"
 
 
-def _write_user_file(missing_objects, target_schema, output_dir,
-                     generated_at, created_files, console):
+def generate_user_script(source_conn, missing_objects, password_diff_users,
+                         dblabel, cfg, console=None, password_sync=False) -> list[str]:
     """
-    Eksik (FAILED) kullanıcı + yetki için **tamamen yorumlu / dry-run** advisory script.
-    Güvenlik: parola hash'leri 11g↔19c taşınabilir değildir ve dataval bunları OKUMAZ;
-    her satır yorumdur → kasıtlı gözden geçirmeden hiçbir şey çalışmaz.
+    Global (instance-wide) USER & yetki provisioning script'i üretir → tek dosya
+    `<dblabel>_USER.sql`. Schema döngüsünden bağımsız, bir kez koşar (run._run_user_generate).
+
+    `cfg` = GenerateScriptsConfig. `password_sync=False` → v0.10.0 ile bire bir aynı
+    güvenli dry-run (hash OKUNMAZ). `password_sync=True` → çalıştırılabilir DDL
+    (`IDENTIFIED BY VALUES` + reconstructed GRANT) + dosya başı HASSAS uyarı.
+    """
+    output_dir = Path(cfg.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    created_files: list[str] = []
+    _write_user_file(
+        missing_objects, password_diff_users, source_conn, dblabel,
+        output_dir, generated_at, created_files, console, password_sync,
+    )
+    return created_files
+
+
+def _identified_clause(verifier) -> tuple:
+    """verifier dict → (IDENTIFIED cümlesi, [uyarı yorumları]).
+    spare4 (SHA) tercih; yoksa password (10g DES) + 19c uyarısı; ikisi de yoksa placeholder."""
+    from validator.modules.users import verifier_value
+    val = verifier_value(verifier)
+    if not val:
+        return ('IDENTIFIED BY "<<PAROLAYI_BELIRLEYIN>>"',
+                ["-- ⚠️  Parola verifier okunamadı (SYS.USER$/DBA_USERS yetkisi yok) — "
+                 "parolayı elle belirleyin."])
+    warns = []
+    if not (verifier and verifier.get("spare4")) and verifier and verifier.get("password"):
+        warns.append("-- ⚠️  Yalnız 10g DES verifier var (spare4 yok). 19c'de DES default KAPALI;")
+        warns.append("--     SEC_CASE_SENSITIVE_LOGON / SQLNET.ALLOWED_LOGON_VERSION_SERVER ayarı gerekebilir.")
+    return (f"IDENTIFIED BY VALUES '{val}'", warns)
+
+
+def _write_user_file(missing_objects, password_diff_users, source_conn, dblabel,
+                     output_dir, generated_at, created_files, console, password_sync):
+    """
+    Eksik (FAILED) kullanıcı + yetki (+ password_sync ise parola farkı) için
+    provisioning script'i yazar.
+
+    password_sync=False → **tamamen yorumlu / dry-run**: parola hash'i OKUNMAZ,
+    her satır yorumdur (kasıtlı gözden geçirmeden hiçbir şey çalışmaz). [v0.10.0]
+    password_sync=True  → **çalıştırılabilir**: CREATE/ALTER USER IDENTIFIED BY VALUES
+    + reconstructed GRANT açık; dosya başına HASSAS uyarı bloğu. Hash yalnız dosyaya
+    yazılır — konsola/loga ASLA basılmaz.
     """
     users     = sorted(missing_objects.get("USER", []))
     sys_privs = sorted(missing_objects.get("SYS_PRIV", []))
     roles     = sorted(missing_objects.get("ROLE", []))
     obj_privs = sorted(missing_objects.get("OBJ_PRIV", []))
-    if not (users or sys_privs or roles or obj_privs):
+    pwd_users = sorted(password_diff_users or [])
+    if not (users or sys_privs or roles or obj_privs or pwd_users):
         return
 
+    if password_sync:
+        lines = _user_file_runnable(
+            users, sys_privs, roles, obj_privs, pwd_users, source_conn, dblabel, generated_at
+        )
+        tag = "çalıştırılabilir/HASSAS"
+    else:
+        lines = _user_file_dryrun(users, sys_privs, roles, obj_privs, dblabel, generated_at)
+        tag = "DRY-RUN/yorumlu"
+
+    filename = f"{dblabel}_USER.sql"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    created_files.append(str(filepath))
+    if console:
+        total = len(users) + len(sys_privs) + len(roles) + len(obj_privs)
+        extra = f", [cyan]{len(pwd_users)}[/cyan] parola-farkı" if pwd_users else ""
+        # NOT: hash değeri burada YOK — yalnız sayım basılır.
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{len(users)}[/cyan] user, [cyan]{total}[/cyan] kayıt{extra} — "
+            f"[yellow]{tag}[/yellow])"
+        )
+
+
+def _user_file_dryrun(users, sys_privs, roles, obj_privs, dblabel, generated_at) -> list:
+    """v0.10.0 davranışı: tamamen yorumlu advisory script (güvenli varsayılan)."""
     lines = [
-        _file_header(target_schema, "USER (DRY-RUN / advisory)", generated_at),
+        _file_header(dblabel, "USER (DRY-RUN / advisory)", generated_at),
         "-- ⚠️  DRY-RUN: TÜM satırlar yorumdur. Gözden geçirip bilinçli olarak açın.",
         "-- ⚠️  Parola hash'leri taşınabilir DEĞİLDİR (11g DBA_USERS.PASSWORD ↔ 19c USER$.SPARE4).",
-        "--     dataval parola hash'i OKUMAZ/LOGLAMAZ — her CREATE USER için parolayı elle belirleyin.",
+        "--     password_sync=false → dataval parola hash'i OKUMAZ; her CREATE USER için parolayı",
+        "--     elle belirleyin (veya password_sync=true ile IDENTIFIED BY VALUES üretin).",
         "",
     ]
-
     if users:
         lines.append("-- ===== Eksik kullanıcılar (CREATE USER iskeleti) =====")
         for u in users:
@@ -929,7 +997,6 @@ def _write_user_file(missing_objects, target_schema, output_dir,
             lines.append(f"--   PROFILE <<PROFILE>>;")
             lines.append(f"-- ALTER USER {u} ACCOUNT UNLOCK;")
             lines.append("")
-
     for title, items in (("Eksik sistem yetkileri", sys_privs),
                          ("Eksik roller", roles),
                          ("Eksik object grant'lar", obj_privs)):
@@ -940,20 +1007,70 @@ def _write_user_file(missing_objects, target_schema, output_dir,
             stmt = _grant_from_name(name)
             lines.append(f"-- {stmt}" if stmt else f"-- (ayrıştırılamadı) {name}")
         lines.append("")
+    return lines
 
-    filename = f"{target_schema}_USER.sql"
-    filepath = output_dir / filename
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
 
-    created_files.append(str(filepath))
-    if console:
-        total = len(users) + len(sys_privs) + len(roles) + len(obj_privs)
-        console.print(
-            f"  [green]✅[/green] {filename}  "
-            f"([cyan]{len(users)}[/cyan] user, [cyan]{total}[/cyan] kayıt — "
-            f"[yellow]DRY-RUN/yorumlu[/yellow])"
-        )
+def _user_file_runnable(users, sys_privs, roles, obj_privs, pwd_users,
+                        source_conn, dblabel, generated_at) -> list:
+    """password_sync=true: çalıştırılabilir CREATE/ALTER USER + reconstructed GRANT.
+    Parola verifier (hash) source'tan SELECT ile okunur, YALNIZ dosyaya yazılır."""
+    from validator.modules.users import fetch_user_verifier, verifier_value, fetch_user_attrs_one
+
+    lines = [
+        _file_header(dblabel, "USER (password_sync — HASSAS)", generated_at),
+        "-- ============================================================",
+        "-- ⚠️  HASSAS DOSYA — CANLI KİMLİK DOĞRULAMA VERİSİ (verifier/hash) İÇERİR.",
+        "--     • Dosya izinlerini kısıtlayın (chmod 600), paylaşmayın, repoya COMMIT'LEMEYİN.",
+        "--     • Uyguladıktan sonra GÜVENLİ biçimde SİLİN.",
+        "-- ⚠️  IDENTIFIED BY VALUES 11g verifier'ı taşır; 19c'de uygulanması için",
+        "--     SEC_CASE_SENSITIVE_LOGON / SQLNET.ALLOWED_LOGON_VERSION_SERVER ayarı gerekebilir.",
+        "-- ============================================================",
+        "",
+    ]
+    if users:
+        lines.append("-- ===== Eksik kullanıcılar (CREATE USER) =====")
+        for u in users:
+            verifier = fetch_user_verifier(source_conn, u)
+            attrs = fetch_user_attrs_one(source_conn, u)
+            ident, warns = _identified_clause(verifier)
+            dts  = attrs.get("default_tablespace") or "USERS"
+            tts  = attrs.get("temporary_tablespace") or "TEMP"
+            prof = attrs.get("profile") or "DEFAULT"
+            lines += warns
+            lines.append(f"CREATE USER {u} {ident}")
+            lines.append(f"  DEFAULT TABLESPACE {dts} TEMPORARY TABLESPACE {tts}")
+            lines.append(f"  PROFILE {prof};")
+            status = (attrs.get("account_status") or "").upper()
+            if "LOCKED" in status:
+                lines.append(f"-- Kaynak account_status={status} → kilitli (gerekirse aç): "
+                             f"ALTER USER {u} ACCOUNT LOCK;")
+            else:
+                lines.append(f"ALTER USER {u} ACCOUNT UNLOCK;")
+            lines.append("")
+    if pwd_users:
+        lines.append("-- ===== Parola farkı olan kullanıcılar (ALTER USER) =====")
+        for u in pwd_users:
+            verifier = fetch_user_verifier(source_conn, u)
+            val = verifier_value(verifier)
+            _, warns = _identified_clause(verifier)
+            lines += warns
+            if val:
+                lines.append(f"ALTER USER {u} IDENTIFIED BY VALUES '{val}';")
+            else:
+                lines.append(f"-- ALTER USER {u} IDENTIFIED BY \"<<PAROLAYI_BELIRLEYIN>>\";"
+                             f"  -- verifier okunamadı")
+            lines.append("")
+    for title, items in (("Eksik sistem yetkileri", sys_privs),
+                         ("Eksik roller", roles),
+                         ("Eksik object grant'lar", obj_privs)):
+        if not items:
+            continue
+        lines.append(f"-- ===== {title} =====")
+        for name in items:
+            stmt = _grant_from_name(name)
+            lines.append(stmt if stmt else f"-- (ayrıştırılamadı) {name}")
+        lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
