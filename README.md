@@ -16,7 +16,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Users (kullanıcı + yetki izolasyonu)** — **şema-bağımsız, instance-wide global** akış (schema döngüsünden önce bir kez koşar, `cfg.schemas`'a bakmaz): app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). `--modules users` → diğer modüller (`tables`/`indexes`/…) `true` olsa bile **atlanır** (Execution Isolation). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir; `password_sync: true` ile **çalıştırılabilir** `CREATE/ALTER USER ... IDENTIFIED BY VALUES`'a (11g→19c verifier taşıma) ve ortak user'larda **parola-farkı NOT-SYNC** tespitine yükseltilir (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT**, GRANT (yalnız eksik) ve **USER** (dry-run/yorumlu) üretilir. Üretim **Execution Guard**'a tabidir: bir tip yalnızca onu sahiplenen validation modülü açıksa üretilir
-- **NOT-SYNC remediation (ALTER)** — yapısı farklı objeleri hedefte hizalayan `ALTER` scriptleri: NOT-SYNC sequence'ler için `ALTER SEQUENCE`, **NOT-SYNC kolonlar** için `ALTER TABLE … MODIFY` (tip/boyut + nullable; `<TGT>_TABLE_ALTER.sql`). Betiğin tamamı **çalıştırılabilir** (v0.12.3+); riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL`) yorumsuz üretilir ama üstüne `-- ⚠️ RİSK` bilgilendirme yorumu + neden (`ORA-01441`/`01439`/`02296`) eklenir. Yeni SQL yok — veri validation sonuçlarından gelir (source read-only)
+- **NOT-SYNC remediation (ALTER)** — yapısı farklı objeleri hedefte hizalayan `ALTER` scriptleri: NOT-SYNC sequence'ler için `ALTER SEQUENCE`, **NOT-SYNC kolonlar** için `ALTER TABLE … MODIFY` (tip/boyut + nullable; `<TGT>_TABLE_ALTER.sql`). Betiğin tamamı **çalıştırılabilir** (v0.12.3+); riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL`) yorumsuz üretilir ama üstüne `-- ⚠️ RİSK` bilgilendirme yorumu + neden (`ORA-01441`/`01439`/`02296`) eklenir. **NOT-SYNC indeksler** (tip/uniqueness/kolon farkı ya da UNUSABLE) için ise `<TGT>_INDEX_REVIEW.sql` üretilir — `DROP+CREATE` yıkıcı olduğundan **tamamı yorumlu/DBA-inceleme** (v0.13.0+; `/* NOT-SYNC REASON … */` + yorumlu `DROP`/`CREATE`/`REBUILD`). Yeni SQL yok — veri validation sonuçlarından gelir (source read-only)
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar ignore edilir, sorun sayılmaz
 - **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
@@ -184,6 +184,15 @@ generate_scripts:
 > değer farkı raporlanır ama MODIFY üretilmez. CHAR/BYTE semantiği imzada taşınmaz — dosya başı notu
 > uyarır. _Not: hedefte tamamen eksik (FAILED) tablolar için `CREATE TABLE` üretimi henüz yoktur._
 
+> **NOT-SYNC indeks remediation / review (v0.13.0+).** `types.INDEX: true` (default) ve
+> `modules.indexes` açıkken, hedefte var ama **tip / uniqueness / kolon** farkı (ya da **UNUSABLE**)
+> olan indeksler için `<TGT>_INDEX_REVIEW.sql` üretilir. Eşitleme yıkıcı `DROP + CREATE` gerektirdiği
+> için **bu dosyadaki tüm ifadeler `-- ` ile yorumludur ve çalıştırılmaz** — her blok DBA tarafından
+> incelenip elle açılmalıdır. Her bloğun başında `/* NOT-SYNC REASON … */` fark nedenini gösterir.
+> Alt-duruma göre: yapısal fark → yorumlu `DROP INDEX` + `CREATE INDEX`; yalnız UNUSABLE → yorumlu
+> `ALTER INDEX … REBUILD`; target'ta fazladan (kaynakta yok) → yalnız yorumlu `DROP INDEX`. FAILED
+> (tamamen eksik) indeksler ise önceki gibi ayrı `<TGT>_INDEX.sql`'de **çalıştırılabilir** kalır.
+
 > **GRANT artık yalnız eksik üretilir (v0.9.1+).** Üretim source↔target diff'ine dayanır —
 > target'ta zaten var olan (SYNC) grant'lar script'e **girmez**. Ayrıca **Execution Guard**'a
 > tabidir: `modules.grants: false` ise `types.GRANT: true` olsa bile GRANT scripti üretilmez
@@ -260,7 +269,8 @@ ddl_output/
 ├── TARGET_SCHEMA_SEQUENCE_ALTER.sql   # NOT-SYNC sequence hizalama (ALTER, opsiyonel)
 ├── TARGET_SCHEMA_TABLE_ALTER.sql      # NOT-SYNC kolon hizalama (ALTER TABLE … MODIFY; çalıştırılabilir, riskli yön uyarılı)
 ├── TARGET_SCHEMA_SYNONYM.sql
-├── TARGET_SCHEMA_INDEX.sql
+├── TARGET_SCHEMA_INDEX.sql            # FAILED (eksik) indeksler — çalıştırılabilir CREATE INDEX
+├── TARGET_SCHEMA_INDEX_REVIEW.sql     # NOT-SYNC indeksler — tamamı yorumlu DROP+CREATE/REBUILD (DBA inceleme, opsiyonel)
 ├── TARGET_SCHEMA_CONSTRAINT.sql       # PK/UK/FK/CHECK (ALTER TABLE ADD)
 ├── TARGET_SCHEMA_FUNCTION.sql
 ├── TARGET_SCHEMA_PROCEDURE.sql
@@ -572,8 +582,12 @@ Hızlı referans:
   farkları için `ALTER TABLE … MODIFY` üretimi (`<TGT>_TABLE_ALTER.sql`). Betiğin tamamı
   çalıştırılabilir; riskli yön (küçültme/base-tip/NOT NULL) `-- ⚠️ RİSK` bilgilendirme yorumu +
   neden ile işaretlenir. Yeni SQL yok (validation sonuçlarından).
+- [x] **NOT-SYNC indeks remediation / review (v0.13.0)** — tip/uniqueness/kolon farkı ya da UNUSABLE
+  indeksler için `<TGT>_INDEX_REVIEW.sql`. `DROP+CREATE` yıkıcı olduğundan **tamamı yorumlu**
+  (DBA inceleme); alt-duruma göre `DROP+CREATE` / `REBUILD` / yalnız `DROP`, `/* NOT-SYNC REASON */`
+  bloğuyla. FAILED indeksler ayrı `<TGT>_INDEX.sql`'de çalıştırılabilir kalır.
 - [ ] **Auto-Sync / Remediation (kalan)** — FAILED tablolar için `CREATE TABLE`; default-değer farkı
-  MODIFY; CHAR/BYTE semantiği. (`NOT-SYNC` sequence + kolon ALTER mevcut.)
+  MODIFY; CHAR/BYTE semantiği. (`NOT-SYNC` sequence + kolon ALTER + indeks review mevcut.)
 - [ ] PostgreSQL desteği
 - [ ] JSON çıktı modu (--output json)
 - [ ] CI/CD entegrasyonu için exit code yönetimi
