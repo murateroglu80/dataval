@@ -5,6 +5,24 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.13.0] - 2026-06-21
+
+### Eklenenler
+- **NOT-SYNC indeksler için DBA-inceleme remediation betiği (`<TGT>_INDEX_REVIEW.sql`).** Şimdiye
+  kadar DDL Generator yalnız **FAILED** (hedefte hiç olmayan) indeksler için doğrudan
+  çalıştırılabilir `CREATE INDEX` üretiyordu (`<TGT>_INDEX.sql`). Artık **NOT-SYNC** indeksler
+  (hedefte var ama **tip / uniqueness / kolon** farkı ya da **UNUSABLE**) de üretime dahil.
+  Eşitleme yıkıcı `DROP + CREATE` gerektirdiğinden bunlar **ayrı** bir dosyaya, **tamamı `-- ` ile
+  yorumlu** (çalıştırılamaz) ve her birinin başında fark nedenini gösteren `/* NOT-SYNC REASON … */`
+  bloğuyla yazılır; betiğin tamamı DBA incelemesi içindir, sqlplus'ta çalıştırılınca hiçbir DDL
+  işlemez. Alt-duruma göre doğru remediation üretilir:
+  - **yapısal fark** (tip/uniqueness/kolon) → yorumlu `DROP INDEX` + yorumlu `CREATE INDEX`
+    (CREATE gövdesi mevcut native `_get_index_ddl` ile, DBMS_METADATA'sız);
+  - **yalnız UNUSABLE** (yapısal fark yok) → yorumlu `ALTER INDEX … REBUILD` (DROP gereksiz);
+  - **target'ta fazladan** (kaynakta yok) → yalnız yorumlu `DROP INDEX` (CREATE yok).
+  FAILED indeks akışı ve `<TGT>_INDEX.sql` değişmedi; üretim INDEX tipi ve `indexes` modülü
+  açıkken devreye girer (Execution Guard). Indeks sınıflandırma mantığı (`indexes.py`) değişmedi.
+
 ## [0.12.3] - 2026-06-20
 
 ### Değişiklikler

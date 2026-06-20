@@ -634,6 +634,7 @@ def generate_scripts(
     not_sync_sequences: Optional[list[str]] = None,  # NOT-SYNC sequence adları → ALTER
     missing_constraints: Optional[list] = None,      # [(table, label, source_value), ...]
     not_sync_columns: Optional[list] = None,         # NOT-SYNC kolon farkları → ALTER MODIFY
+    not_sync_indexes: Optional[list] = None,         # NOT-SYNC indeks farkları → REVIEW (yorumlu)
     target_conn=None,                                # CONSTRAINT conflict probe (yalnız SELECT)
     enabled_modules: Optional[set] = None,           # Execution Guard: açık validation modülleri
 ) -> list[str]:
@@ -766,6 +767,14 @@ def generate_scripts(
     if not_sync_columns and cfg.types.get("TABLE", True) and _module_on("tables"):
         _write_column_alter_file(
             source_conn, source_schema, target_schema, not_sync_columns,
+            cfg, output_dir, generated_at, created_files, console,
+        )
+
+    # NOT-SYNC indeks remediation (REVIEW / yorumlu DROP+CREATE) — INDEX tipi açıksa,
+    # indexes modülü açıksa. Yıkıcı olduğu için ayrı dosyaya tamamen yorumlu yazılır.
+    if not_sync_indexes and cfg.types.get("INDEX", True) and _module_on("indexes"):
+        _write_index_review_file(
+            source_conn, source_schema, target_schema, not_sync_indexes,
             cfg, output_dir, generated_at, created_files, console,
         )
 
@@ -959,6 +968,88 @@ def _write_column_alter_file(source_conn, source_schema, target_schema, columns,
             f"([cyan]{written}[/cyan] NOT-SYNC kolon → MODIFY"
             + (f", [yellow]{risky_count} riskli (uyarılı)[/yellow]" if risky_count else "")
             + ")"
+        )
+
+
+# ---------------------------------------------------------------------------
+# NOT-SYNC indeks → REVIEW dosyası (tamamı yorumlu, DBA incelemesi)
+# ---------------------------------------------------------------------------
+def _write_index_review_file(source_conn, source_schema, target_schema, indexes,
+                             cfg, output_dir, generated_at, created_files, console):
+    """NOT-SYNC indeksler için DBA-inceleme script'i yazar (TÜM ifadeler yorumlu).
+
+    `indexes`: [(index_name, src_sig, tgt_sig, diffs, note), ...]. Eşitleme yıkıcı
+    DROP+CREATE gerektirdiği için hiçbir ifade çalıştırılabilir DEĞİLDİR; her satır
+    `-- ` ile yorumludur, fark nedeni `/* NOT-SYNC REASON ... */` bloğunda verilir.
+    Alt-duruma göre remediation:
+      • yapısal fark (tip/uniqueness/kolon) → DROP + CREATE
+      • yalnız UNUSABLE (diffs yok)        → ALTER INDEX ... REBUILD (DROP gereksiz)
+      • target'ta fazla (kaynakta yok)     → yalnız DROP (CREATE yok)
+    """
+    eff_schema = target_schema if cfg.replace_schema else source_schema
+    none_vals = (None, "", "—", "-", "(yok)")
+
+    def _commented(stmt: str) -> str:
+        # Çok-satırlı ifadenin HER satırına `-- ` öneki uygula (review = yorumlu).
+        return "\n".join("-- " + ln for ln in stmt.splitlines())
+
+    blocks = []
+    written = 0
+    for (name, src_sig, tgt_sig, diffs, note) in sorted(indexes, key=lambda r: r[0]):
+        src_missing = src_sig in none_vals
+
+        reason = [f"/* NOT-SYNC REASON ({name}):"]
+        if diffs:
+            width = max((len(str(a)) for a, _, _ in diffs), default=0)
+            for attr, s, t in diffs:
+                reason.append(f"     {str(attr).ljust(width)}  Source: {s}   Target: {t}")
+        elif note:
+            reason.append(f"     {note}")
+
+        if src_missing:
+            # Target'ta fazladan indeks; kaynakta yok → yalnız DROP.
+            reason.append("   Target'ta fazladan indeks; kaynakta yok → yalnız DROP (DBA incelemesi). */")
+            blocks.append("\n".join(reason) + "\n")
+            blocks.append(f'-- DROP INDEX "{eff_schema}"."{name}";\n')
+        elif not diffs and note and "UNUSABLE" in str(note).upper():
+            # Yapı aynı, indeks UNUSABLE → REBUILD yeterli (DROP gereksiz).
+            reason.append("   Yapı aynı, indeks UNUSABLE → REBUILD yeterli (DBA incelemesi). */")
+            blocks.append("\n".join(reason) + "\n")
+            blocks.append(f'-- ALTER INDEX "{eff_schema}"."{name}" REBUILD;\n')
+        else:
+            # Yapısal fark → DROP + CREATE (her ikisi yorumlu).
+            reason.append("   Eşitleme DROP+CREATE gerektirir — hedefte erişim/performans etkisi; DBA incelemesi. */")
+            blocks.append("\n".join(reason) + "\n")
+            blocks.append(f'-- DROP INDEX "{eff_schema}"."{name}";\n')
+            ddl = _get_index_ddl(source_conn, source_schema, name, eff_schema)
+            if ddl:
+                blocks.append(_commented(ddl) + ";\n")
+            else:
+                blocks.append(f"-- (CREATE üretilemedi: {name} kaynak meta bulunamadı — elle inceleyin)\n")
+        written += 1
+        blocks.append("")
+
+    if written == 0:
+        return
+
+    note_hdr = ("⚠️ Bu dosyadaki TÜM ifadeler yorumludur ve ÇALIŞTIRILMAZ. DROP+CREATE "
+                "yıkıcıdır (indeks erişimi/performans etkisi); her blok DBA tarafından "
+                "incelenip elle açılmalıdır.")
+    filename = f"{target_schema}_INDEX_REVIEW.sql"
+    filepath = output_dir / filename
+    content = (
+        _file_header(target_schema, "INDEX (REVIEW / NOT-SYNC)", generated_at)
+        + f"-- NOT: {note_hdr}\n\n"
+        + "\n".join(blocks) + "\n"
+    )
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    created_files.append(str(filepath))
+    if console:
+        console.print(
+            f"  [green]✅[/green] {filename}  "
+            f"([cyan]{written}[/cyan] NOT-SYNC indeks → review)"
         )
 
 

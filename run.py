@@ -428,6 +428,9 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
     # NOT-SYNC kolonlar → ALTER TABLE ... MODIFY (tip/boyut + nullable). Yalnız-default
     # farkı kapsam dışı. Kayıt: (table, column, src_sig, tgt_sig, has_tip, src_null, tgt_null).
     not_sync_columns: list[tuple] = []
+    # NOT-SYNC indeksler → DBA-inceleme script'i (yorumlu DROP+CREATE). Hedefte var ama
+    # tip/uniqueness/kolon farkı ya da UNUSABLE. Kayıt: (index_name, src_sig, tgt_sig, diffs, note).
+    not_sync_indexes: list[tuple] = []
     # Eksik constraint'ler → (tablo, label, imza). object_type="CONSTRAINT(PK|UK|FK|CHECK)",
     # object_name=tablo, source_value=yapısal imza (constraints.py adı bilinçli atar).
     missing_constraints: list[tuple] = []
@@ -466,9 +469,16 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
                     table, column, r.source_value, r.target_value,
                     has_tip, (nz[1] if nz else None), (nz[2] if nz else None),
                 ))
+            elif r.status == Status.NOT_SYNC and obj_type == "INDEX":
+                # (index_name, source_value, target_value, diffs, note) — remediation
+                # (DROP+CREATE / REBUILD / DROP) generator'da alt-duruma göre kurulur.
+                not_sync_indexes.append(
+                    (r.object_name, r.source_value, r.target_value, r.diffs, r.note)
+                )
 
     if (not any(missing.values()) and not not_sync_sequences
-            and not missing_constraints and not not_sync_columns):
+            and not missing_constraints and not not_sync_columns
+            and not not_sync_indexes):
         console.print("[dim]  ℹ️  Generate scripts: eksik/NOT-SYNC obje bulunamadı.[/]")
         return
 
@@ -478,6 +488,8 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
         extras.append(f"{len(not_sync_sequences)} NOT-SYNC sequence")
     if not_sync_columns:
         extras.append(f"{len(not_sync_columns)} NOT-SYNC kolon")
+    if not_sync_indexes:
+        extras.append(f"{len(not_sync_indexes)} NOT-SYNC indeks")
     if missing_constraints:
         extras.append(f"{len(missing_constraints)} eksik constraint")
     extra = (" + " + " + ".join(extras)) if extras else ""
@@ -495,6 +507,7 @@ def _run_generate_scripts(src_conn, tgt_conn, summaries: list, mapping, cfg, ena
         not_sync_sequences=not_sync_sequences,
         missing_constraints=missing_constraints,
         not_sync_columns=not_sync_columns,
+        not_sync_indexes=not_sync_indexes,
         target_conn=tgt_conn,
         enabled_modules=enabled_modules,
     )
