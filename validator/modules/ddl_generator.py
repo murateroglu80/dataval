@@ -927,10 +927,10 @@ def _write_column_alter_file(source_conn, source_schema, target_schema, columns,
             risky, reasons = _classify_column_risk(src_sig, tgt_sig, has_tip,
                                                    src_null, tgt_null)
             if risky:
+                # Riskli ifade de çalıştırılabilir; uyarı yalnız bilgi amaçlı (operatör görsün).
                 risky_count += 1
                 blocks.append(f"-- ⚠️ RİSK ({column}): " + "; ".join(reasons) + "\n")
-                blocks.append("-- Doğrulayıp elle açın:\n")
-                blocks.append(f"-- {stmt}\n")
+                blocks.append(stmt + "\n")
             else:
                 blocks.append(stmt + "\n")
             written += 1
@@ -939,8 +939,9 @@ def _write_column_alter_file(source_conn, source_schema, target_schema, columns,
     if written == 0:
         return
 
-    note = ("Riskli (yorumlu) ifadeler ve CHAR/BYTE semantiği uygulamadan önce "
-            "doğrulanmalıdır.")
+    note = ("⚠️ RİSK ile işaretli ifadeler veri kaybı/hata riski taşır; CHAR/BYTE "
+            "semantiğiyle birlikte uygulamadan önce doğrulanmalıdır. Betiğin tamamı "
+            "çalıştırılabilirdir.")
     filename = f"{target_schema}_TABLE_ALTER.sql"
     filepath = output_dir / filename
     content = (
@@ -956,7 +957,7 @@ def _write_column_alter_file(source_conn, source_schema, target_schema, columns,
         console.print(
             f"  [green]✅[/green] {filename}  "
             f"([cyan]{written}[/cyan] NOT-SYNC kolon → MODIFY"
-            + (f", [yellow]{risky_count} riskli-yorumlu[/yellow]" if risky_count else "")
+            + (f", [yellow]{risky_count} riskli (uyarılı)[/yellow]" if risky_count else "")
             + ")"
         )
 

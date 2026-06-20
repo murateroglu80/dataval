@@ -16,7 +16,7 @@ Oracle 11g → 19c (ve ötesi) schema migration'larını CLI üzerinden hızlıc
 - **Users (kullanıcı + yetki izolasyonu)** — **şema-bağımsız, instance-wide global** akış (schema döngüsünden önce bir kez koşar, `cfg.schemas`'a bakmaz): app kullanıcılarının varlığı/öznitelikleri, sistem yetkileri (`DBA_SYS_PRIVS`), rol grant'ları (`DBA_ROLE_PRIVS`) ve grantee-merkezli object grant'lar karşılaştırılır. Sistem user'ları (SYS, XDB, APEX_*, SPATIAL_* …) **dinamik** elenir (19c `oracle_maintained`, 11g statik fallback). `--modules users` → diğer modüller (`tables`/`indexes`/…) `true` olsa bile **atlanır** (Execution Isolation). Eksik user'lar için **dry-run / yorumlu** `CREATE USER` + grant iskeleti üretilir; `password_sync: true` ile **çalıştırılabilir** `CREATE/ALTER USER ... IDENTIFIED BY VALUES`'a (11g→19c verifier taşıma) ve ortak user'larda **parola-farkı NOT-SYNC** tespitine yükseltilir (opt-in)
 - **Akıllı row count** — `auto / exact / sample / stats / skip` modları; sorgu timeout; paralel hint
 - **DDL script üretimi** — Target'ta eksik objelerin SQL*Plus uyumlu create scriptlerini otomatik oluşturur. **Tamamen native** (`ALL_SOURCE` / `ALL_TRIGGERS` / `ALL_SYNONYMS` / `ALL_INDEXES` / `ALL_CONSTRAINTS`) — `DBMS_METADATA` kullanılmaz, böylece Oracle 11g `ORA-03113` riski yoktur. SEQUENCE, PL/SQL, TRIGGER, SYNONYM, **INDEX**, **CONSTRAINT**, GRANT (yalnız eksik) ve **USER** (dry-run/yorumlu) üretilir. Üretim **Execution Guard**'a tabidir: bir tip yalnızca onu sahiplenen validation modülü açıksa üretilir
-- **NOT-SYNC remediation (ALTER)** — yapısı farklı objeleri hedefte hizalayan `ALTER` scriptleri: NOT-SYNC sequence'ler için `ALTER SEQUENCE`, **NOT-SYNC kolonlar** için `ALTER TABLE … MODIFY` (tip/boyut + nullable; `<TGT>_TABLE_ALTER.sql`). Riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL`) veri kaybı/`ORA-01441`/`02296` riski nedeniyle **yorumlu** üretilir + neden; güvenli yön çalıştırılabilir. Yeni SQL yok — veri validation sonuçlarından gelir (source read-only)
+- **NOT-SYNC remediation (ALTER)** — yapısı farklı objeleri hedefte hizalayan `ALTER` scriptleri: NOT-SYNC sequence'ler için `ALTER SEQUENCE`, **NOT-SYNC kolonlar** için `ALTER TABLE … MODIFY` (tip/boyut + nullable; `<TGT>_TABLE_ALTER.sql`). Betiğin tamamı **çalıştırılabilir** (v0.12.3+); riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL`) yorumsuz üretilir ama üstüne `-- ⚠️ RİSK` bilgilendirme yorumu + neden (`ORA-01441`/`01439`/`02296`) eklenir. Yeni SQL yok — veri validation sonuçlarından gelir (source read-only)
 - **Migration statü jargonu** — her sonuç `SYNC` (eşit) / `NOT-SYNC` (var ama farklı) / `FAILED` (target'ta eksik/doğrulanamadı) olarak sınıflanır; tek eşik (`level`) terminal + log gürültüsünü kısar
 - **11g → 19c toleransı** — BASICFILE→SECUREFILE, SEGMENT CREATION DEFERRED gibi bilinen farklar ignore edilir, sorun sayılmaz
 - **Source read-only koruma** — source production kabul edilir; varsayılan olarak bu bağlantıya `DBMS_STATS` dahil **hiçbir yazma** yapılmaz
@@ -172,14 +172,15 @@ generate_scripts:
     INDEX:     true             # eksik index'ler (ALL_INDEXES native; UNIQUE/BITMAP/DESC/FBI)
     CONSTRAINT: true            # eksik PK/UK/FK/CHECK (ALTER TABLE ADD; PK/UK→FK sıralı)
     GRANT:     true             # yalnız EKSİK object grant'lar (modules.grants açıksa)
-    TABLE:     true             # NOT-SYNC kolon farkları → ALTER TABLE … MODIFY (riskli yön yorumlu)
+    TABLE:     true             # NOT-SYNC kolon farkları → ALTER TABLE … MODIFY (çalıştırılabilir; riskli yön -- ⚠️ RİSK uyarılı)
 ```
 
 > **NOT-SYNC kolon remediation (v0.12.0+).** `types.TABLE: true` (default) ve `modules.tables`
 > açıkken, tip/boyut veya nullable farkı olan kolonlar için `<TGT>_TABLE_ALTER.sql` üretilir
-> (`ALTER TABLE "S"."T" MODIFY ("C" <tip> [NOT NULL])`). **Riskli yön yorumlu:** boyut küçültme,
-> base-tip değişimi ve `NULL→NOT NULL` sıkılaştırma `--` ile yorumlanıp neden yazılır (veri kaybı /
-> `ORA-01441`/`01439`/`02296`); güvenli yön (genişletme, `NOT NULL→NULL`) çalıştırılabilir. Default
+> (`ALTER TABLE "S"."T" MODIFY ("C" <tip> [NOT NULL])`). **Betiğin tamamı çalıştırılabilir
+> (v0.12.3+):** riskli yön (boyut küçültme, base-tip değişimi, `NULL→NOT NULL`) de yorumsuz üretilir,
+> ama hemen üstüne `-- ⚠️ RİSK (...)` **bilgilendirme yorumu** + neden (veri kaybı /
+> `ORA-01441`/`01439`/`02296`) yazılır; güvenli yön (genişletme, `NOT NULL→NULL`) uyarısız. Default
 > değer farkı raporlanır ama MODIFY üretilmez. CHAR/BYTE semantiği imzada taşınmaz — dosya başı notu
 > uyarır. _Not: hedefte tamamen eksik (FAILED) tablolar için `CREATE TABLE` üretimi henüz yoktur._
 
@@ -257,7 +258,7 @@ ddl_output/
 ├── TARGET_SCHEMA_TYPE_BODY.sql
 ├── TARGET_SCHEMA_SEQUENCE.sql
 ├── TARGET_SCHEMA_SEQUENCE_ALTER.sql   # NOT-SYNC sequence hizalama (ALTER, opsiyonel)
-├── TARGET_SCHEMA_TABLE_ALTER.sql      # NOT-SYNC kolon hizalama (ALTER TABLE … MODIFY; riskli yön yorumlu)
+├── TARGET_SCHEMA_TABLE_ALTER.sql      # NOT-SYNC kolon hizalama (ALTER TABLE … MODIFY; çalıştırılabilir, riskli yön uyarılı)
 ├── TARGET_SCHEMA_SYNONYM.sql
 ├── TARGET_SCHEMA_INDEX.sql
 ├── TARGET_SCHEMA_CONSTRAINT.sql       # PK/UK/FK/CHECK (ALTER TABLE ADD)
@@ -567,9 +568,10 @@ Hızlı referans:
 - [x] **Global user akışı + parola senkronu + Execution Isolation (v0.11.0)** — users modülü
   şema-bağımsız global faza taşındı (`--modules users` → diğer modüller atlanır); opt-in
   `password_sync` ile 11g→19c `IDENTIFIED BY VALUES` üretimi + parola-farkı NOT-SYNC (maskeli).
-- [x] **NOT-SYNC kolon remediation (v0.12.0)** — tip/boyut + nullable farkları için
-  `ALTER TABLE … MODIFY` üretimi (`<TGT>_TABLE_ALTER.sql`); riskli yön (küçültme/base-tip/NOT NULL)
-  yorumlu + neden, güvenli yön çalıştırılabilir. Yeni SQL yok (validation sonuçlarından).
+- [x] **NOT-SYNC kolon remediation (v0.12.0; v0.12.3'te çalıştırılabilir)** — tip/boyut + nullable
+  farkları için `ALTER TABLE … MODIFY` üretimi (`<TGT>_TABLE_ALTER.sql`). Betiğin tamamı
+  çalıştırılabilir; riskli yön (küçültme/base-tip/NOT NULL) `-- ⚠️ RİSK` bilgilendirme yorumu +
+  neden ile işaretlenir. Yeni SQL yok (validation sonuçlarından).
 - [ ] **Auto-Sync / Remediation (kalan)** — FAILED tablolar için `CREATE TABLE`; default-değer farkı
   MODIFY; CHAR/BYTE semantiği. (`NOT-SYNC` sequence + kolon ALTER mevcut.)
 - [ ] PostgreSQL desteği

@@ -5,6 +5,18 @@ Bu projedeki tüm önemli değişiklikler bu dosyada belgelenir.
 Format [Keep a Changelog](https://keepachangelog.com/tr/1.0.0/) temel alınarak tutulur
 ve proje [Semantic Versioning](https://semver.org/lang/tr/) kurallarını izler.
 
+## [0.12.3] - 2026-06-20
+
+### Değişiklikler
+- **NOT-SYNC kolon `ALTER TABLE … MODIFY` betiği artık tamamen çalıştırılabilir.** v0.12.0'da
+  riskli yön (boyut **küçültme**, **base-tip** değişimi, `NULL→NOT NULL`) güvenlik için `-- ` ile
+  **yorumlanıp** çalıştırılamaz halde üretiliyordu; operatörün her satırı elle açması gerekiyordu.
+  Artık `<TGT>_TABLE_ALTER.sql` içindeki tüm `MODIFY` ifadeleri **yorumsuz/çalıştırılabilir**;
+  betik tek seferde uygulanabilir. Risk görünürlüğü kaybolmadı: her riskli ifadenin hemen üstünde
+  `-- ⚠️ RİSK (kolon): neden (ORA-01441/01439/01440/02296)` **bilgilendirme yorumu** durur ve dosya
+  başı notu veri-kaybı/CHAR-BYTE doğrulamasını hatırlatır. Risk sınıflandırma mantığı
+  (`_classify_column_risk`) değişmedi.
+
 ## [0.12.2] - 2026-06-18
 
 ### Düzeltmeler
